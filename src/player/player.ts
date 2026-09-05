@@ -1,9 +1,16 @@
 import type { FeedApiClient } from '../api/client.js';
 import type { Play, SearchPlay } from '../api/schema.js';
 import type { AudioDriver } from '../audio/driver.js';
-import { ELAPSE_INTERVAL_MS, TICK_INTERVAL_MS } from '../config.js';
+import {
+  ELAPSE_INTERVAL_MS,
+  MAX_CONSECUTIVE_PLAY_FAILURES,
+  MAX_EXPIRY_REFETCHES,
+  TICK_INTERVAL_MS,
+  URL_EXPIRY_MARGIN_SECONDS,
+} from '../config.js';
 import { ErrorCode, FeedError } from '../errors.js';
 import type { Player, PlayerEvents, PlayerStatus, SongMetadata, Station, StopReason } from '../types.js';
+import { urlExpiry } from '../url-expiry.js';
 import { Emitter } from './emitter.js';
 import { ReservationStore, isReservationFresh } from './reservations.js';
 import { toPublicStation, toStationRecord, type StationRecord } from './stations.js';
@@ -341,8 +348,74 @@ export class PlayerImpl implements Player {
     }
   }
 
-  #onAudioError(): void { /* Task 14 */ }
-  async #handleLoadFailure(_play: Play | SearchPlay, _generation: number): Promise<void> { /* Task 14 */ }
+  #onAudioError(): void {
+    const active = this.#activePlay;
+    if (active === null) return;
+    void this.#handleLoadFailure(active.play, this.#generation);
+  }
+
+  /**
+   * Two very different failures arrive here, and the URL says which.
+   *
+   * An expired signature means the song is fine — POST /play re-signs it — so
+   * the play is discarded and re-fetched, with no invalidate.
+   *
+   * Anything else means the file itself is unplayable, and invalidate is the
+   * only way to stop POST /play handing back the identical broken play.
+   */
+  async #handleLoadFailure(play: Play | SearchPlay, generation: number): Promise<void> {
+    if (generation !== this.#generation) return;
+
+    const url = play.audio_file.url;
+    const expiry = url === undefined
+      ? 'unknown'
+      : urlExpiry(url, URL_EXPIRY_MARGIN_SECONDS, this.#now());
+
+    if (expiry === 'expired') {
+      if (this.#expiryRefetches >= MAX_EXPIRY_REFETCHES) {
+        this.#emitError(new FeedError(ErrorCode.networkError, 'audio url kept arriving expired', 0));
+        this.#teardown('error');
+        return;
+      }
+      this.#expiryRefetches += 1;
+      await this.#retryWithFreshPlay(generation);
+      return;
+    }
+
+    this.#consecutiveFailures += 1;
+    void this.#client
+      .invalidatePlay(play.id, 'audio failed to load')
+      .catch(() => undefined);
+
+    if (this.#consecutiveFailures >= MAX_CONSECUTIVE_PLAY_FAILURES) {
+      this.#emitError(new FeedError(ErrorCode.networkError, 'audio repeatedly failed to load', 0));
+      this.#teardown('error');
+      return;
+    }
+
+    await this.#retryWithFreshPlay(generation);
+  }
+
+  async #retryWithFreshPlay(generation: number): Promise<void> {
+    const station = this.#activeStation;
+    if (station === null || station.id === '') return;
+
+    this.#setBuffering(true);
+
+    try {
+      const play = await this.#client.createPlay(station.id);
+      if (generation !== this.#generation) return;
+      await this.#beginPlayback(play, generation);
+    } catch (error) {
+      if (generation !== this.#generation) return;
+      if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) {
+        this.#teardown('ended');
+        return;
+      }
+      this.#emitError(error);
+      this.#teardown('error');
+    }
+  }
 
   pause(): void {
     const active = this.#activePlay;
@@ -362,7 +435,15 @@ export class PlayerImpl implements Player {
     if (this.#status !== 'paused' || this.#activePlay === null) return;
 
     this.#status = 'playing';
-    void this.#driver.play().catch((error: unknown) => { this.#emitError(error); });
+    const generation = this.#generation;
+    void this.#driver.play().catch((error: unknown) => {
+      if (generation !== this.#generation) return;
+      // The dominant cause here is browser autoplay policy, not a bad play —
+      // the play is left intact so a later user gesture can retry it.
+      this.#status = 'paused';
+      this.#stopTimers();
+      this.#emitError(error);
+    });
     this.#startTimers();
 
     const song = this.activeSong();

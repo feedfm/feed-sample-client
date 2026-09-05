@@ -65,6 +65,28 @@ describe('pause and resume', () => {
     expect(eventNames().at(-1)).toBe('play-started');
   });
 
+  // Regression: an autoplay-policy rejection on resume must revert to
+  // 'paused' rather than stranding the player claiming 'playing' while no
+  // audio is actually running.
+  it('reverts to paused when resume() is rejected', async () => {
+    const harness = makePlayer();
+    const { player, driver, events } = harness;
+    await playing(harness);
+    player.pause();
+    driver.playRejection = new Error('NotAllowedError');
+
+    player.resume();
+    await settle();
+
+    expect(player.status()).toBe('paused');
+
+    const before = events.filter((e) => e.name === 'play-elapsed').length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events.filter((e) => e.name === 'play-elapsed')).toHaveLength(before);
+
+    expect(events.filter((e) => e.name === 'error')).toHaveLength(1);
+  });
+
   it('play() on the paused station resumes rather than restarting', async () => {
     const harness = makePlayer();
     const { player, client, driver } = harness;
