@@ -199,10 +199,11 @@ side, a station they cannot play.
 Two failures get real handling rather than an event and a shrug:
 
 1. **Audio fails to load.** `POST /play/{id}/invalidate` with a reason, then
-   reserve a fresh play and retry. This is the path the API docs prescribe, and
-   it is the difference between one bad transcode ending the session and it not.
-   Capped at `MAX_CONSECUTIVE_PLAY_FAILURES` (3), after which the player stops
-   with reason `'error'` and emits `error`.
+   reserve a fresh play and retry. This is one of only two places the SDK
+   invalidates rather than discards (see §9): without it, `POST /play` returns
+   the same broken play and the retry loops on a dead file. Capped at
+   `MAX_CONSECUTIVE_PLAY_FAILURES` (3), after which the player stops with reason
+   `'error'` and emits `error`.
 
 2. **`POST /play` fails.** One retry with backoff on 5xx and network errors
    only, never on 4xx. Failures accumulate toward the code-22 throttle
@@ -316,14 +317,42 @@ A reservation is fresh when both hold:
 
 Consumption and cleanup:
 
+**An unused play is discarded, not invalidated.** Dropping the reference is
+enough — no `POST /play/{id}/invalidate` call, no request at all. So:
+
 - `play()` uses a fresh reservation and removes it from the map.
-- A stale reservation is invalidated (`POST /play/{id}/invalidate`) and replaced
-  by a fresh `POST /play { station_id }` from the internal record.
+- `stop()` discards `nextPlay`.
+- Tearing down to switch stations discards the outgoing station's `nextPlay`.
 - A second `findStation` for the same station replaces the reservation and
-  invalidates the old one.
-- `stop()` invalidates `nextPlay`. Outstanding search reservations are left to
-  be invalidated lazily when superseded or found stale, so `stop()` stays fast
-  and non-blocking.
+  discards the old one.
+
+Discarding is not merely acceptable in these cases, it is slightly better than
+invalidating: an unstarted play stays in the client's queue, so the next
+`POST /play` for that station hands the same song back, and a listener who
+returns to a station resumes where they were rather than losing a track.
+
+### The two cases that must still invalidate
+
+`POST /play` returns the *same* play until that play is either started or
+invalidated. Verified against stage: three consecutive `POST /play` calls for
+one station all returned play `122059400751373`; after
+`POST /play/{id}/invalidate` the next call returned a different play. The
+response is byte-identical across repeats, so a re-fetch does not re-sign the
+audio URL either.
+
+`invalidate` is therefore not a courtesy to the server. It is the only lever
+that produces a *different* play, which makes it load-bearing in exactly two
+places:
+
+1. **A play whose audio failed to load.** Discard it and the retry receives the
+   identical broken play, fails again, and loops until the failure cap kills the
+   station. Invalidating moves past the bad transcode, which is the entire point
+   of the call.
+2. **A reservation that has aged past `RESERVATION_TTL_MS`.** Its signed URL is
+   near or past expiry, and re-fetching returns the same play with the same URL.
+   Invalidating is the only way to obtain a playable one.
+
+Everywhere else, discard.
 
 ### Station without an internal record
 
@@ -375,7 +404,7 @@ This method never touches playback state, so it is safe to call mid-song.
 1. If `activeStation?.uuid === station.uuid`: resume when `'paused'`, no-op when
    `'playing'`, fall through when `'stopped'`.
 2. Otherwise tear down: stop audio, `POST elapse` for `activePlay` if it was
-   started, invalidate `nextPlay`, clear state, emit `play-stopped` with reason
+   started, discard `nextPlay`, clear state, emit `play-stopped` with reason
    `'superseded'`.
 3. Increment `generation`. Set `activeStation`, `status = 'playing'`,
    `buffering = true`, emit `buffering-started`. Call `driver.unlock()`.
@@ -430,9 +459,10 @@ requested, and `PROMPT.md` says to ask the server.
 ### stop
 
 No-op when already `'stopped'`. Otherwise: stop audio, `POST elapse` for
-`activePlay` if started, invalidate `nextPlay`, clear `activePlay`, `nextPlay`
+`activePlay` if started, discard `nextPlay`, clear `activePlay`, `nextPlay`
 and `activeStation`, stop timers, `status = 'stopped'`, `buffering = false`,
 increment `generation`, emit `play-stopped` with reason `'stopped-by-caller'`.
+The only network call `stop()` makes is the `elapse`.
 
 `stop` never calls `complete`, because the song did not finish. `elapse` reports
 what was actually heard.
@@ -459,6 +489,9 @@ malformed JSON, and network failure.
 - song end calls `complete` and promotes the preloaded standby
 - `noMoreMusic` stops with reason `'ended'` and emits no `error`
 - a stale reservation is invalidated and re-reserved
+- `stop()` issues an `elapse` and no `invalidate`
+- switching stations discards the outgoing `nextPlay` without any request
+- a second `findStation` for one station discards the prior reservation silently
 - a station with no internal record is located by uuid search
 - audio load failure invalidates and retries, and stops after 3
 - a late response from a superseded `play()` is dropped by the generation guard
@@ -511,6 +544,12 @@ revisited:
 - **Event names are explicit kebab-case** (`play-started`, `buffering-started`)
   rather than mirroring DOM audio event names, so no reader assumes DOM
   semantics the SDK does not guarantee.
+- **Unused plays are discarded, never invalidated**, except for a play whose
+  audio failed to load and a reservation past its TTL. Measured against stage:
+  `POST /play` returns the same play until it is started or invalidated, so in
+  those two cases discarding produces a retry loop on the same unplayable song,
+  while everywhere else it saves a request and lets a listener return to a
+  station without losing a track.
 - **`Authorization`, not `X-Authorization`**, verified by preflight against
   stage.
 - **Layered modules with an explicit status union**, rather than a single class
