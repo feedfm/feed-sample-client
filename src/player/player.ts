@@ -343,9 +343,54 @@ export class PlayerImpl implements Player {
 
   #onAudioError(): void { /* Task 14 */ }
   async #handleLoadFailure(_play: Play | SearchPlay, _generation: number): Promise<void> { /* Task 14 */ }
-  pause(): void { /* Task 13 */ }
-  resume(): void { /* Task 13 */ }
-  async skip(): Promise<boolean> { return false; /* Task 13 */ }
+
+  pause(): void {
+    const active = this.#activePlay;
+    if (this.#status !== 'playing' || active === null) return;
+
+    this.#driver.pause();
+    this.#stopTimers();
+    this.#status = 'paused';
+    this.#setBuffering(false);
+    this.#reportElapse(active);
+
+    const song = this.activeSong();
+    if (song !== null) this.#emitter.emit('play-paused', song);
+  }
+
+  resume(): void {
+    if (this.#status !== 'paused' || this.#activePlay === null) return;
+
+    this.#status = 'playing';
+    void this.#driver.play().catch((error: unknown) => { this.#emitError(error); });
+    this.#startTimers();
+
+    const song = this.activeSong();
+    if (song !== null) this.#emitter.emit('play-started', song);
+  }
+
+  /**
+   * The server decides. A `false` here means keep playing: ending the song
+   * anyway would breach the licensing protocol.
+   */
+  async skip(): Promise<boolean> {
+    const active = this.#activePlay;
+    if (active === null || !active.started) return false;
+
+    const generation = this.#generation;
+
+    try {
+      const granted = await this.#client.skipPlay(active.play.id, this.#driver.currentTime());
+      if (!granted) return false;
+      if (generation !== this.#generation) return true;
+
+      await this.#advance(generation, { complete: false });
+      return true;
+    } catch (error) {
+      this.#emitError(error);
+      return false;
+    }
+  }
 
   /** Stores the station and the play the search reserved as a side effect. */
   #recordSearchResult(play: SearchPlay): StationRecord {
