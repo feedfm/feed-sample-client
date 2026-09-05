@@ -63,11 +63,38 @@ player.on('play-paused',       (song) => {});
 player.on('play-stopped',      ({ reason }) => {});  // 'ended' | 'stopped-by-caller' | 'superseded' | 'error'
 player.on('buffering-started', () => {});
 player.on('buffering-ended',   () => {});
-player.on('error',             (err) => {});   // FeedError
+player.on('error',             (err) => {});   // FeedError — see Errors below
 ```
 
 A station running out of music emits `play-stopped` with reason `'ended'`, not
 an `error`.
+
+## Errors
+
+`FeedError` carries a `code` (number), a `mnemonic` (the name for that code) and
+a `status` (the HTTP status from the request that failed). `code` is the
+stable value to branch on; `message` is free text that varies by call site and
+isn't meant for `switch` statements.
+
+`ErrorCode` is exported so you can compare against named codes instead of
+magic numbers:
+
+```typescript
+import { ErrorCode, FeedError } from 'feed-sample-client';
+
+player.on('error', (err) => {
+  if (err.code === ErrorCode.skipDenied) return; // playback continues
+  console.error(`${err.mnemonic} (${err.code}): ${err.message}`);
+});
+
+try {
+  await connect({ token: 'demo', secret: 'demo' });
+} catch (err) {
+  if (err instanceof FeedError && err.code === ErrorCode.noMoreMusic) {
+    // this client has no playable music
+  }
+}
+```
 
 ## Notes
 
