@@ -1,6 +1,7 @@
 import type { FeedApiClient } from '../api/client.js';
 import type { Play, SearchPlay } from '../api/schema.js';
 import type { AudioDriver } from '../audio/driver.js';
+import { ELAPSE_INTERVAL_MS, TICK_INTERVAL_MS } from '../config.js';
 import { ErrorCode, FeedError } from '../errors.js';
 import type { Player, PlayerEvents, PlayerStatus, SongMetadata, Station, StopReason } from '../types.js';
 import { Emitter } from './emitter.js';
@@ -48,6 +49,10 @@ export class PlayerImpl implements Player {
   #playsStartedCount = 0;
   #consecutiveFailures = 0;
   #expiryRefetches = 0;
+
+  #tickTimer: ReturnType<typeof setInterval> | undefined;
+  #elapseTimer: ReturnType<typeof setInterval> | undefined;
+  #audioBound = false;
 
   constructor(deps: PlayerDeps) {
     this.#client = deps.client;
@@ -100,12 +105,198 @@ export class PlayerImpl implements Player {
     }
   }
 
-  // --- Task 11/13 stubs: keep this class satisfying `Player` until those tasks land. ---
-  play(_station: Station): void { /* Task 11 */ }
+  play(station: Station): void {
+    if (this.#activeStation?.uuid === station.uuid) {
+      if (this.#status === 'paused') { this.resume(); return; }
+      if (this.#status === 'playing') return;
+    }
+    void this.#startStation(station);
+  }
+
+  stop(): void {
+    if (this.#status === 'stopped') return;
+    this.#teardown('stopped-by-caller');
+  }
+
+  async #startStation(station: Station): Promise<void> {
+    this.#bindAudio();
+    if (this.#status !== 'stopped') this.#teardown('superseded');
+
+    const generation = ++this.#generation;
+    this.#activeStation =
+      this.#stations.get(station.uuid) ??
+      { uuid: station.uuid, id: '', name: station.name, options: station.options };
+    this.#status = 'playing';
+    this.#consecutiveFailures = 0;
+    this.#expiryRefetches = 0;
+    this.#setBuffering(true);
+    this.#driver.unlock();
+
+    try {
+      const play = await this.#obtainPlay(station.uuid);
+      if (generation !== this.#generation) return;
+      await this.#beginPlayback(play, generation);
+    } catch (error) {
+      this.#failStart(error, generation);
+    }
+  }
+
+  /**
+   * A fresh reservation is used as-is. A stale one is simply dropped — an
+   * unused play needs no invalidate — and replaced by a new reservation.
+   */
+  async #obtainPlay(uuid: string): Promise<Play | SearchPlay> {
+    const reserved = this.#reservations.take(uuid);
+    if (reserved !== undefined && isReservationFresh(reserved, this.#playsStartedCount, this.#now())) {
+      return reserved.play;
+    }
+
+    const record = this.#stations.get(uuid);
+    if (record !== undefined && record.id !== '') return this.#client.createPlay(record.id);
+
+    // No internal record: uuid is the stable way to name one station.
+    const play = await this.#client.searchStation({ filter: { uuid } });
+    this.#activeStation = this.#recordSearchResult(play);
+    this.#reservations.take(uuid);
+    return play;
+  }
+
+  async #beginPlayback(play: Play | SearchPlay, generation: number): Promise<void> {
+    const url = play.audio_file.url;
+    if (url === undefined) {
+      throw new FeedError(ErrorCode.networkError, 'play carried no audio url', 200);
+    }
+
+    this.#activePlay = { play, started: false, canSkip: false };
+    this.#driver.loadCurrent(url, play.start_at ?? 0);
+
+    try {
+      await this.#driver.play();
+    } catch (error) {
+      if (generation === this.#generation) await this.#handleLoadFailure(play, generation);
+    }
+  }
+
+  #bindAudio(): void {
+    if (this.#audioBound) return;
+    this.#audioBound = true;
+    this.#driver.on('playing', () => { this.#onAudioPlaying(); });
+    this.#driver.on('ended', () => { this.#onAudioEnded(); });
+    this.#driver.on('waiting', () => { if (this.#status === 'playing') this.#setBuffering(true); });
+    this.#driver.on('error', () => { this.#onAudioError(); });
+  }
+
+  /** Audio has genuinely started, so the listen may now be reported. */
+  #onAudioPlaying(): void {
+    const active = this.#activePlay;
+    if (active === null) {
+      return;
+    }
+    if (active.started) {
+      this.#setBuffering(false);
+      return;
+    }
+
+    active.started = true;
+    this.#playsStartedCount += 1;
+    this.#consecutiveFailures = 0;
+    this.#expiryRefetches = 0;
+
+    const generation = this.#generation;
+    void this.#client
+      .startPlay(active.play.id)
+      .then((rights) => { if (generation === this.#generation) active.canSkip = rights.canSkip; })
+      .catch((error: unknown) => { this.#emitError(error); });
+
+    this.#setBuffering(false);
+    this.#startTimers();
+
+    const song = this.activeSong();
+    if (song !== null) this.#emitter.emit('play-started', song);
+
+    void this.#reserveNext(generation);
+  }
+
+  /** Retrieving audio is faster than playing it, so fetch the next song now. */
+  async #reserveNext(generation: number): Promise<void> {
+    const station = this.#activeStation;
+    if (station === null || station.id === '') return;
+
+    try {
+      const play = await this.#client.createPlay(station.id);
+      if (generation !== this.#generation) return;
+
+      this.#nextPlay = play;
+      if (play.audio_file.url !== undefined) {
+        this.#driver.loadStandby(play.audio_file.url, play.start_at ?? 0);
+      }
+    } catch (error) {
+      // Running dry is handled when we actually try to advance.
+      if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) return;
+      this.#emitError(error);
+    }
+  }
+
+  #startTimers(): void {
+    this.#stopTimers();
+    this.#tickTimer = setInterval(() => {
+      const song = this.activeSong();
+      if (song !== null) this.#emitter.emit('play-elapsed', song);
+    }, TICK_INTERVAL_MS);
+    this.#elapseTimer = setInterval(() => {
+      this.#reportElapse(this.#activePlay);
+    }, ELAPSE_INTERVAL_MS);
+  }
+
+  #stopTimers(): void {
+    if (this.#tickTimer !== undefined) clearInterval(this.#tickTimer);
+    if (this.#elapseTimer !== undefined) clearInterval(this.#elapseTimer);
+    this.#tickTimer = undefined;
+    this.#elapseTimer = undefined;
+  }
+
+  #reportElapse(active: ActivePlay | null): void {
+    if (active === null || !active.started) return;
+    void this.#client
+      .elapsePlay(active.play.id, this.#driver.currentTime())
+      .catch((error: unknown) => { this.#emitError(error); });
+  }
+
+  #teardown(reason: StopReason): void {
+    const active = this.#activePlay;
+    const hadPlayback = active !== null || this.#activeStation !== null;
+
+    this.#stopTimers();
+    this.#reportElapse(active);
+    this.#driver.stop();
+
+    // Discarded, never invalidated: an unstarted play stays queued server-side.
+    this.#nextPlay = null;
+    this.#activePlay = null;
+    this.#activeStation = null;
+    this.#status = 'stopped';
+    this.#setBuffering(false);
+    this.#generation += 1;
+
+    if (hadPlayback) this.#emitter.emit('play-stopped', { reason });
+  }
+
+  #failStart(error: unknown, generation: number): void {
+    if (generation !== this.#generation) return;
+    if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) {
+      this.#teardown('ended');
+      return;
+    }
+    this.#emitError(error);
+    this.#teardown('error');
+  }
+
+  #onAudioEnded(): void { /* Task 12 */ }
+  #onAudioError(): void { /* Task 14 */ }
+  async #handleLoadFailure(_play: Play | SearchPlay, _generation: number): Promise<void> { /* Task 14 */ }
   pause(): void { /* Task 13 */ }
   resume(): void { /* Task 13 */ }
   async skip(): Promise<boolean> { return false; /* Task 13 */ }
-  stop(): void { /* Task 11 */ }
 
   /** Stores the station and the play the search reserved as a side effect. */
   #recordSearchResult(play: SearchPlay): StationRecord {
