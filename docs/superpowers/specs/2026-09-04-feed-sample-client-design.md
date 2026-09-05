@@ -198,12 +198,20 @@ side, a station they cannot play.
 
 Two failures get real handling rather than an event and a shrug:
 
-1. **Audio fails to load.** `POST /play/{id}/invalidate` with a reason, then
-   reserve a fresh play and retry. This is one of only two places the SDK
-   invalidates rather than discards (see §9): without it, `POST /play` returns
-   the same broken play and the retry loops on a dead file. Capped at
-   `MAX_CONSECUTIVE_PLAY_FAILURES` (3), after which the player stops with reason
-   `'error'` and emits `error`.
+1. **Audio fails to load.** Branch on why, by reading `Expires` off the URL
+   that failed (§9):
+
+   - **Expired** (`Expires` in the past). The song is fine, only its signature
+     aged out. Discard the play, `POST /play { station_id }` for the same
+     station to obtain a re-signed URL, and retry. **Do not invalidate.**
+     Capped separately at `MAX_EXPIRY_REFETCHES` (2), so a URL that somehow
+     comes back expired again cannot spin.
+   - **Anything else** (`Expires` valid, or absent). Treat the file as bad:
+     `POST /play/{id}/invalidate` with a reason, then reserve a fresh play and
+     retry. This is the only place the SDK invalidates (§9); without it
+     `POST /play` returns the same broken play and the retry loops on a dead
+     file. Capped at `MAX_CONSECUTIVE_PLAY_FAILURES` (3), after which the
+     player stops with reason `'error'` and emits `error`.
 
 2. **`POST /play` fails.** One retry with backoff on 5xx and network errors
    only, never on 4xx. Failures accumulate toward the code-22 throttle
@@ -310,47 +318,69 @@ stations: Map<uuid, StationRecord>
 
 A reservation is fresh when both hold:
 
-- `Date.now() - reservedAt < RESERVATION_TTL_MS` (15 minutes, leaving margin
-  against the ~20 minute URL expiry), and
 - `startedCountAtReserve === playsStartedCount` — no other play has been started
-  since, which is the condition the spec names directly.
+  since, which is the condition the spec names directly, and
+- the audio URL has not expired, per the rule below.
 
-Consumption and cleanup:
+### Reading expiry off the URL
+
+The audio URL is a CloudFront signature carrying an `Expires` query parameter: a
+Unix epoch timestamp **in seconds**. That is the authoritative expiry signal, so
+the SDK reads it rather than guessing from elapsed wall-clock time.
+
+```typescript
+type Expiry = 'valid' | 'expired' | 'unknown';
+
+function urlExpiry(url: string, marginSeconds: number): Expiry;
+```
+
+- `Expires` present and more than `URL_EXPIRY_MARGIN_SECONDS` in the future →
+  `'valid'`.
+- `Expires` present and at or past that point → `'expired'`.
+- `Expires` absent → `'unknown'`. Stage serves unsigned URLs with no query
+  string at all, so this case is real and must not be treated as expired. Fall
+  back to the age heuristic, `Date.now() - reservedAt < RESERVATION_TTL_MS`.
+
+### An expired URL is refreshed by re-fetching, never by invalidating
+
+A play whose URL has expired is not a bad play. Calling `POST /play` again for
+the same station re-signs the audio file and yields a usable URL, so the SDK
+discards the stale copy and re-fetches. **`POST /play/{id}/invalidate` must not
+be called for an expired URL** — the song is fine and there is no reason to
+throw it away.
+
+This applies both to the proactive freshness check above and to a load failure
+discovered at playback time (§6).
+
+### Consumption and cleanup
 
 **An unused play is discarded, not invalidated.** Dropping the reference is
-enough — no `POST /play/{id}/invalidate` call, no request at all. So:
+enough — no `invalidate` call, no request at all. So:
 
 - `play()` uses a fresh reservation and removes it from the map.
 - `stop()` discards `nextPlay`.
 - Tearing down to switch stations discards the outgoing station's `nextPlay`.
 - A second `findStation` for the same station replaces the reservation and
   discards the old one.
+- A reservation with an expired URL is discarded and re-fetched.
 
-Discarding is not merely acceptable in these cases, it is slightly better than
+Discarding is not merely acceptable here, it is slightly better than
 invalidating: an unstarted play stays in the client's queue, so the next
 `POST /play` for that station hands the same song back, and a listener who
 returns to a station resumes where they were rather than losing a track.
 
-### The two cases that must still invalidate
+### The one case that must still invalidate
 
 `POST /play` returns the *same* play until that play is either started or
 invalidated. Verified against stage: three consecutive `POST /play` calls for
-one station all returned play `122059400751373`; after
-`POST /play/{id}/invalidate` the next call returned a different play. The
-response is byte-identical across repeats, so a re-fetch does not re-sign the
-audio URL either.
+one station all returned play `122059400751373`; only after
+`POST /play/{id}/invalidate` did the next call return a different play.
 
-`invalidate` is therefore not a courtesy to the server. It is the only lever
-that produces a *different* play, which makes it load-bearing in exactly two
-places:
-
-1. **A play whose audio failed to load.** Discard it and the retry receives the
-   identical broken play, fails again, and loops until the failure cap kills the
-   station. Invalidating moves past the bad transcode, which is the entire point
-   of the call.
-2. **A reservation that has aged past `RESERVATION_TTL_MS`.** Its signed URL is
-   near or past expiry, and re-fetching returns the same play with the same URL.
-   Invalidating is the only way to obtain a playable one.
+So `invalidate` is not a courtesy to the server — it is the only lever that
+produces a *different* play. That makes it load-bearing in exactly one place:
+**a play whose audio failed to load for a reason other than URL expiry.** A
+broken transcode discarded rather than invalidated comes straight back on the
+retry and loops until the failure cap kills the station.
 
 Everywhere else, discard.
 
@@ -488,7 +518,13 @@ malformed JSON, and network failure.
 - skip granted advances without calling `complete`
 - song end calls `complete` and promotes the preloaded standby
 - `noMoreMusic` stops with reason `'ended'` and emits no `error`
-- a stale reservation is invalidated and re-reserved
+- a reservation whose URL `Expires` is in the past is discarded and re-fetched,
+  with no `invalidate` request
+- a load failure on an expired URL re-fetches without invalidating; a load
+  failure on a URL that is valid or has no `Expires` does invalidate
+- `urlExpiry` returns `'unknown'` for a URL with no query string, and the age
+  heuristic is used instead
+- repeated expiry re-fetches stop at `MAX_EXPIRY_REFETCHES`
 - `stop()` issues an `elapse` and no `invalidate`
 - switching stations discards the outgoing `nextPlay` without any request
 - a second `findStation` for one station discards the prior reservation silently
@@ -517,7 +553,9 @@ real button click, since autoplay policy requires the gesture.
 
 | Name | Value |
 | --- | --- |
-| `RESERVATION_TTL_MS` | 900_000 (15 min) |
+| `RESERVATION_TTL_MS` | 900_000 (15 min) — fallback only, when `Expires` is absent |
+| `URL_EXPIRY_MARGIN_SECONDS` | 30 |
+| `MAX_EXPIRY_REFETCHES` | 2 |
 | `ELAPSE_INTERVAL_MS` | 10_000 |
 | `TICK_INTERVAL_MS` | 1_000 |
 | `MAX_CONSECUTIVE_PLAY_FAILURES` | 3 |
@@ -544,12 +582,17 @@ revisited:
 - **Event names are explicit kebab-case** (`play-started`, `buffering-started`)
   rather than mirroring DOM audio event names, so no reader assumes DOM
   semantics the SDK does not guarantee.
-- **Unused plays are discarded, never invalidated**, except for a play whose
-  audio failed to load and a reservation past its TTL. Measured against stage:
-  `POST /play` returns the same play until it is started or invalidated, so in
-  those two cases discarding produces a retry loop on the same unplayable song,
-  while everywhere else it saves a request and lets a listener return to a
-  station without losing a track.
+- **Unused plays are discarded, never invalidated**, with one exception: a play
+  whose audio failed to load for a reason other than URL expiry. Measured
+  against stage, `POST /play` returns the same play until it is started or
+  invalidated, so discarding a genuinely broken transcode loops the retry on the
+  same dead file. Everywhere else discarding saves a request and lets a listener
+  return to a station without losing a track.
+- **An expired audio URL is refreshed by re-fetching, not by invalidating.**
+  `POST /play` re-signs the URL, so the song is still good. Expiry is read from
+  the `Expires` query parameter rather than inferred from elapsed time; the
+  15-minute TTL survives only as a fallback for URLs that carry no `Expires`,
+  which is how stage serves them.
 - **`Authorization`, not `X-Authorization`**, verified by preflight against
   stage.
 - **Layered modules with an explicit status union**, rather than a single class
