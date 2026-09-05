@@ -57,6 +57,14 @@ export class PlayerImpl implements Player {
   #consecutiveFailures = 0;
   #expiryRefetches = 0;
 
+  /**
+   * The id of the play `#handleLoadFailure` is currently recovering from, so
+   * a second failure signal for that same play (a real `<audio>` element can
+   * both reject `play()` and dispatch its own `error` event for one broken
+   * load) is dropped instead of being counted and invalidated twice.
+   */
+  #recoveringPlayId: string | null = null;
+
   #tickTimer: ReturnType<typeof setInterval> | undefined;
   #elapseTimer: ReturnType<typeof setInterval> | undefined;
   #audioBound = false;
@@ -175,6 +183,8 @@ export class PlayerImpl implements Player {
       throw new FeedError(ErrorCode.networkError, 'play carried no audio url', 200);
     }
 
+    // A new attempt is starting, so any earlier recovery is done with.
+    this.#recoveringPlayId = null;
     this.#activePlay = { play, started: false, canSkip: false };
     this.#driver.loadCurrent(url, play.start_at ?? 0);
 
@@ -283,6 +293,7 @@ export class PlayerImpl implements Player {
     this.#activePlay = null;
     this.#activeStation = null;
     this.#status = 'stopped';
+    this.#recoveringPlayId = null;
     this.#setBuffering(false);
     this.#generation += 1;
 
@@ -365,6 +376,11 @@ export class PlayerImpl implements Player {
    */
   async #handleLoadFailure(play: Play | SearchPlay, generation: number): Promise<void> {
     if (generation !== this.#generation) return;
+    // A real <audio> element can both reject play() and dispatch its own
+    // error event for the same broken load; a second entry for the play
+    // already being recovered is dropped rather than double-counted.
+    if (this.#recoveringPlayId === play.id) return;
+    this.#recoveringPlayId = play.id;
 
     const url = play.audio_file.url;
     const expiry = url === undefined
@@ -407,13 +423,7 @@ export class PlayerImpl implements Player {
       if (generation !== this.#generation) return;
       await this.#beginPlayback(play, generation);
     } catch (error) {
-      if (generation !== this.#generation) return;
-      if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) {
-        this.#teardown('ended');
-        return;
-      }
-      this.#emitError(error);
-      this.#teardown('error');
+      this.#failStart(error, generation);
     }
   }
 
@@ -432,17 +442,25 @@ export class PlayerImpl implements Player {
   }
 
   resume(): void {
-    if (this.#status !== 'paused' || this.#activePlay === null) return;
+    const active = this.#activePlay;
+    if (this.#status !== 'paused' || active === null) return;
 
     this.#status = 'playing';
     const generation = this.#generation;
     void this.#driver.play().catch((error: unknown) => {
       if (generation !== this.#generation) return;
+      // Generation alone does not identify the song: #advance() and skip()
+      // move to a new song without bumping it. Only revert if this is still
+      // the same song this resume() started, and it is still marked playing
+      // (a later pause()/teardown() already resolved things correctly).
+      if (this.#activePlay !== active || this.#status !== 'playing') return;
       // The dominant cause here is browser autoplay policy, not a bad play —
       // the play is left intact so a later user gesture can retry it.
       this.#status = 'paused';
       this.#stopTimers();
       this.#emitError(error);
+      const song = this.activeSong();
+      if (song !== null) this.#emitter.emit('play-paused', song);
     });
     this.#startTimers();
 

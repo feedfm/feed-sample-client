@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Play } from '../src/api/schema.js';
+import { ErrorCode, FeedError } from '../src/errors.js';
 import { NOW, makePlay, makePlayer } from './player-harness.js';
 
 beforeEach(() => { vi.useFakeTimers(); });
@@ -45,8 +46,17 @@ describe('expired audio URLs', () => {
     await settle();
 
     expect(client.createPlay).toHaveBeenCalledTimes(1 + 2); // initial + MAX_EXPIRY_REFETCHES
+    // The whole point of this branch: an expired URL never invalidates,
+    // even after exhausting every retry and giving up.
+    expect(client.invalidatePlay).not.toHaveBeenCalled();
     expect(player.status()).toBe('stopped');
-    expect(events.filter((e) => e.name === 'error').length).toBeGreaterThan(0);
+    const errorEvents = events.filter((e) => e.name === 'error');
+    expect(errorEvents).toHaveLength(1);
+    const emitted = errorEvents[0]?.arg;
+    expect(emitted).toBeInstanceOf(FeedError);
+    expect((emitted as FeedError).code).toBe(ErrorCode.networkError);
+    expect((emitted as FeedError).message).toBe('audio url kept arriving expired');
+    expect(events.at(-1)).toEqual({ name: 'play-stopped', arg: { reason: 'error' } });
   });
 
   it('discards a reservation whose URL expired and fetches a fresh play', async () => {
@@ -129,6 +139,52 @@ describe('genuinely bad audio', () => {
     await settle();
 
     expect(client.invalidatePlay).toHaveBeenCalledWith('bad', expect.any(String));
+  });
+
+  // A real <audio> element can both reject play() and dispatch its own
+  // 'error' event for one broken load. #onAudioError always blames whatever
+  // play is currently active, so a duplicate error arriving while the first
+  // failure's retry is still in flight (its createPlay has not yet
+  // resolved, so #activePlay still names the play that just failed) must
+  // not be double-counted or invalidated twice.
+  it('treats a duplicate error signal for the play already being recovered as one failure', async () => {
+    const { player, client, driver } = makePlayer();
+    let releaseRetry: (play: Play) => void = () => {};
+    client.createPlay
+      .mockResolvedValueOnce(makePlay('bad', validUrl))
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseRetry = resolve; }));
+    driver.playRejection = new Error('decode error');
+
+    player.play(POP);
+    await settle();
+
+    // The retry from the failure above is still waiting on its own
+    // createPlay call, so #activePlay is still 'bad'. A genuine 'error'
+    // event for that same still-active play races in now.
+    driver.fire('error');
+
+    releaseRetry(makePlay('good', validUrl));
+    await settle();
+
+    expect(client.invalidatePlay).toHaveBeenCalledTimes(1);
+    expect(driver.currentUrl).toBe(validUrl);
+  });
+
+  // The spec caps retries on a failing station, but a station that goes
+  // dry mid-recovery is not a failure — it is the same "no more music"
+  // outcome #startStation already handles, and must not be reported as one.
+  it('stops without an error when recovery finds the station dry', async () => {
+    const { player, client, driver, events } = makePlayer();
+    client.createPlay
+      .mockResolvedValueOnce(makePlay('bad', validUrl))
+      .mockRejectedValue(new FeedError(ErrorCode.noMoreMusic, 'dry', 200));
+    driver.playRejection = new Error('decode error');
+
+    player.play(POP);
+    await settle();
+
+    expect(events.filter((e) => e.name === 'error')).toHaveLength(0);
+    expect(events.at(-1)).toEqual({ name: 'play-stopped', arg: { reason: 'ended' } });
   });
 });
 

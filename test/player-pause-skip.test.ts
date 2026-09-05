@@ -70,7 +70,7 @@ describe('pause and resume', () => {
   // audio is actually running.
   it('reverts to paused when resume() is rejected', async () => {
     const harness = makePlayer();
-    const { player, driver, events } = harness;
+    const { player, driver, events, eventNames } = harness;
     await playing(harness);
     player.pause();
     driver.playRejection = new Error('NotAllowedError');
@@ -79,12 +79,66 @@ describe('pause and resume', () => {
     await settle();
 
     expect(player.status()).toBe('paused');
+    // The play itself was fine — an autoplay rejection is not a load
+    // failure — so it must survive intact for a later gesture to retry.
+    expect(player.activeSong()).not.toBeNull();
 
     const before = events.filter((e) => e.name === 'play-elapsed').length;
     await vi.advanceTimersByTimeAsync(5000);
     expect(events.filter((e) => e.name === 'play-elapsed')).toHaveLength(before);
 
     expect(events.filter((e) => e.name === 'error')).toHaveLength(1);
+    // status() and the event stream must agree: a consumer watching only
+    // events, not polling status(), still needs to see the revert.
+    expect(eventNames().at(-1)).toBe('play-paused');
+
+    const playsBefore = driver.playCalls;
+    player.resume();
+    await settle();
+
+    expect(player.status()).toBe('playing');
+    expect(driver.playCalls).toBe(playsBefore + 1);
+  });
+
+  // Regression: #advance() (ended/skip) moves to a new song without
+  // bumping #generation, so "same generation" alone does not mean "same
+  // song". A resume() rejection that lands after #advance() has already
+  // moved on must not stomp on the song that is genuinely playing now.
+  it('does not revert a resume() rejection that arrives after the song has moved on', async () => {
+    const harness = makePlayer();
+    const { player, driver, events, eventNames } = harness;
+    await playing(harness); // 'p1' active, 'p2' already reserved as standby
+    player.pause();
+
+    let rejectResume: (() => void) | undefined;
+    let calls = 0;
+    driver.play = vi.fn(() => {
+      calls += 1;
+      // Only resume()'s own call (the first) stays pending; anything
+      // #advance() triggers afterward should succeed normally.
+      if (calls === 1) {
+        return new Promise<void>((_resolve, reject) => { rejectResume = () => reject(new Error('AbortError')); });
+      }
+      return Promise.resolve();
+    });
+
+    player.resume(); // driver.play() call #1 is now pending
+    driver.markStandbyReady();
+    driver.fire('ended'); // #advance() promotes standby to 'p2' and calls driver.play() #2, which resolves
+    await settle();
+
+    expect(player.status()).toBe('playing');
+    expect(player.activeSong()).toMatchObject({ title: 'Song p2' });
+    const eventsSoFar = events.length;
+
+    // The stale rejection from resume()'s original, superseded call arrives now.
+    rejectResume?.();
+    await settle();
+
+    expect(player.status()).toBe('playing');
+    expect(player.activeSong()).toMatchObject({ title: 'Song p2' });
+    expect(events.filter((e) => e.name === 'error')).toHaveLength(0);
+    expect(eventNames().slice(eventsSoFar)).not.toContain('play-paused');
   });
 
   it('play() on the paused station resumes rather than restarting', async () => {
