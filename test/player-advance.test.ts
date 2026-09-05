@@ -109,5 +109,7 @@ describe('running out of music', () => {
     await settle();
 
     expect(client.completePlay).toHaveBeenCalledWith('p1');
+    // The play was already completed; teardown must not also elapse it.
+    expect(client.elapsePlay).not.toHaveBeenCalled();
   });
 });

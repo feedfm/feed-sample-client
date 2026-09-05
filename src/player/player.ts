@@ -302,6 +302,7 @@ export class PlayerImpl implements Player {
    */
   async #advance(generation: number, options: { complete: boolean }): Promise<void> {
     const finished = this.#activePlay;
+    this.#activePlay = null;
     this.#stopTimers();
 
     if (finished !== null && options.complete) {
@@ -336,14 +337,7 @@ export class PlayerImpl implements Player {
       if (generation !== this.#generation) return;
       await this.#beginPlayback(play, generation);
     } catch (error) {
-      if (generation !== this.#generation) return;
-      // The station is exhausted. That is the end of a station, not a failure.
-      if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) {
-        this.#teardown('ended');
-        return;
-      }
-      this.#emitError(error);
-      this.#teardown('error');
+      this.#failStart(error, generation);
     }
   }
 
