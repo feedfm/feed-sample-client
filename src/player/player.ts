@@ -133,7 +133,7 @@ export class PlayerImpl implements Player {
     this.#driver.unlock();
 
     try {
-      const play = await this.#obtainPlay(station.uuid);
+      const play = await this.#obtainPlay(station.uuid, generation);
       if (generation !== this.#generation) return;
       await this.#beginPlayback(play, generation);
     } catch (error) {
@@ -145,7 +145,7 @@ export class PlayerImpl implements Player {
    * A fresh reservation is used as-is. A stale one is simply dropped — an
    * unused play needs no invalidate — and replaced by a new reservation.
    */
-  async #obtainPlay(uuid: string): Promise<Play | SearchPlay> {
+  async #obtainPlay(uuid: string, generation: number): Promise<Play | SearchPlay> {
     const reserved = this.#reservations.take(uuid);
     if (reserved !== undefined && isReservationFresh(reserved, this.#playsStartedCount, this.#now())) {
       return reserved.play;
@@ -156,6 +156,7 @@ export class PlayerImpl implements Player {
 
     // No internal record: uuid is the stable way to name one station.
     const play = await this.#client.searchStation({ filter: { uuid } });
+    if (generation !== this.#generation) return play; // caller's guard discards it
     this.#activeStation = this.#recordSearchResult(play);
     this.#reservations.take(uuid);
     return play;

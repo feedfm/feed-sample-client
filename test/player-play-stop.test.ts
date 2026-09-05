@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makePlay, makePlayer, makeSearchPlay, apiStation } from './player-harness.js';
+import type { SearchPlay } from '../src/api/schema.js';
+import { ErrorCode, FeedError } from '../src/errors.js';
 
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
@@ -101,6 +103,21 @@ describe('play', () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(client.elapsePlay).toHaveBeenCalledWith('p1', 10);
+    expect(client.elapsePlay).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a superseded station capture the preload queue', async () => {
+    const { player, client, driver } = makePlayer([{ uuid: 'u-7', id: '7', name: 'Pop', options: {} }]);
+    let resolveSearch!: (p: SearchPlay) => void;
+    client.searchStation.mockReturnValue(new Promise((r) => { resolveSearch = r; }));
+    client.createPlay.mockResolvedValue(makePlay('p-b'));
+
+    player.play({ uuid: 'u-x', name: 'Elsewhere', options: {} });   // unknown → search path
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });          // supersedes
+    resolveSearch(makeSearchPlay('p-a', apiStation({ uuid: 'u-x', id: '99' })));
+    await beginPlayback(driver);
+
+    expect(client.createPlay).not.toHaveBeenCalledWith('99');
   });
 
   it('is a no-op when asked to play the station already playing', async () => {
@@ -116,6 +133,32 @@ describe('play', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.createPlay.mock.calls.length).toBe(callsBefore);
+  });
+});
+
+describe('startup failure', () => {
+  it('ends quietly, with no error event, when the station has run dry', async () => {
+    const { player, client, eventNames, events } = makePlayer();
+    client.createPlay.mockRejectedValue(new FeedError(ErrorCode.noMoreMusic, 'no more music', 200));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(eventNames()).not.toContain('error');
+    const stopped = events.find((e) => e.name === 'play-stopped');
+    expect(stopped?.arg).toEqual({ reason: 'ended' });
+  });
+
+  it('emits an error and stops for any other startup failure', async () => {
+    const { player, client, eventNames, events } = makePlayer();
+    client.createPlay.mockRejectedValue(new FeedError(ErrorCode.internalError, 'boom', 500));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(eventNames()).toContain('error');
+    const stopped = events.find((e) => e.name === 'play-stopped');
+    expect(stopped?.arg).toEqual({ reason: 'error' });
   });
 });
 
