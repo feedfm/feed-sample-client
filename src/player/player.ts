@@ -292,7 +292,61 @@ export class PlayerImpl implements Player {
     this.#teardown('error');
   }
 
-  #onAudioEnded(): void { /* Task 12 */ }
+  #onAudioEnded(): void {
+    void this.#advance(this.#generation, { complete: true });
+  }
+
+  /**
+   * Moves to the next song. `complete: false` is used after a granted skip,
+   * which has already closed the play out server-side.
+   */
+  async #advance(generation: number, options: { complete: boolean }): Promise<void> {
+    const finished = this.#activePlay;
+    this.#stopTimers();
+
+    if (finished !== null && options.complete) {
+      void this.#client
+        .completePlay(finished.play.id)
+        .catch((error: unknown) => { this.#emitError(error); });
+    }
+
+    const next = this.#nextPlay;
+    this.#nextPlay = null;
+
+    // The happy path: the next song is already buffered, so there is no wait
+    // and nothing to report as buffering.
+    if (next !== null && this.#driver.hasStandby()) {
+      this.#driver.promoteStandby();
+      this.#activePlay = { play: next, started: false, canSkip: false };
+      try {
+        await this.#driver.play();
+      } catch {
+        if (generation === this.#generation) await this.#handleLoadFailure(next, generation);
+      }
+      return;
+    }
+
+    this.#setBuffering(true);
+
+    const station = this.#activeStation;
+    if (station === null) return;
+
+    try {
+      const play = next ?? (await this.#client.createPlay(station.id));
+      if (generation !== this.#generation) return;
+      await this.#beginPlayback(play, generation);
+    } catch (error) {
+      if (generation !== this.#generation) return;
+      // The station is exhausted. That is the end of a station, not a failure.
+      if (error instanceof FeedError && error.code === ErrorCode.noMoreMusic) {
+        this.#teardown('ended');
+        return;
+      }
+      this.#emitError(error);
+      this.#teardown('error');
+    }
+  }
+
   #onAudioError(): void { /* Task 14 */ }
   async #handleLoadFailure(_play: Play | SearchPlay, _generation: number): Promise<void> { /* Task 14 */ }
   pause(): void { /* Task 13 */ }
