@@ -1,6 +1,7 @@
 import { DEFAULT_BASE_URL } from '../config.js';
 import { ErrorCode, FeedError } from '../errors.js';
 import type { FeedErrorBody } from './schema.js';
+import type { Play, SearchPlay, SessionResponse, StationSearchQuery } from './schema.js';
 
 export interface FeedApiClientOptions {
   token: string;
@@ -72,5 +73,65 @@ export class FeedApiClient {
     }
 
     return parsed as T;
+  }
+
+  async startSession(clientId?: string): Promise<SessionResponse> {
+    const body = clientId === undefined ? {} : { client_id: clientId };
+    // Bypass the automatic client_id merge: on the very first session there is
+    // none, and this is the only route that will mint one for us.
+    const saved = this.clientId;
+    this.clientId = clientId;
+    try {
+      return await this.post<SessionResponse>('/session', body);
+    } finally {
+      this.clientId = saved;
+    }
+  }
+
+  async searchStation(query: StationSearchQuery): Promise<SearchPlay> {
+    const body = await this.post<{ play: SearchPlay }>('/station', { q: [query] });
+    return body.play;
+  }
+
+  async createPlay(stationId: string): Promise<Play> {
+    const body = await this.post<{ play: Play }>('/play', { station_id: stationId });
+    return body.play;
+  }
+
+  async startPlay(playId: string): Promise<{ canSkip: boolean; canLike: boolean }> {
+    const body = await this.post<{ can_skip: boolean; can_like: boolean }>(`/play/${playId}/start`, {});
+    return { canSkip: body.can_skip, canLike: body.can_like };
+  }
+
+  async elapsePlay(playId: string, seconds: number): Promise<void> {
+    await this.post(`/play/${playId}/elapse`, { seconds: Math.floor(seconds) });
+  }
+
+  /**
+   * Returns false when the server refuses. The caller MUST keep playing on a
+   * false: stopping a song without a granted skip breaches the licensing
+   * protocol and can get credentials revoked.
+   */
+  async skipPlay(playId: string, seconds: number): Promise<boolean> {
+    try {
+      await this.post(`/play/${playId}/skip`, { seconds: Math.floor(seconds) });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof FeedError &&
+        (error.code === ErrorCode.skipDenied || error.code === ErrorCode.playNotActive)
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async completePlay(playId: string): Promise<void> {
+    await this.post(`/play/${playId}/complete`, {});
+  }
+
+  async invalidatePlay(playId: string, reason: string): Promise<void> {
+    await this.post(`/play/${playId}/invalidate`, { reason });
   }
 }
