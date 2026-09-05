@@ -1,6 +1,6 @@
 type AnyHandler = (...args: never[]) => void;
 
-export class Emitter<E extends Record<string, AnyHandler>> {
+export class Emitter<E extends Record<keyof E, AnyHandler>> {
   readonly #handlers = new Map<keyof E, Set<AnyHandler>>();
 
   on<K extends keyof E>(event: K, handler: E[K]): void {
