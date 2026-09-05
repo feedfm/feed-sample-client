@@ -384,6 +384,7 @@ export class PlayerImpl implements Player {
       if (!granted) return false;
       if (generation !== this.#generation) return true;
 
+      this.#status = 'playing';
       await this.#advance(generation, { complete: false });
       return true;
     } catch (error) {

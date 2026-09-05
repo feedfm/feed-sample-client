@@ -165,4 +165,18 @@ describe('skip', () => {
     await expect(player.skip()).resolves.toBe(false);
     expect(client.skipPlay).not.toHaveBeenCalled();
   });
+
+  // Regression: a granted skip while paused must leave status() reporting
+  // 'playing', not stranded at 'paused' while audio is audibly advancing.
+  it('status reflects playing after a granted skip while paused', async () => {
+    const harness = makePlayer();
+    const { player, driver } = harness;
+    await playing(harness);
+    player.pause();
+
+    await player.skip();
+    driver.fire('playing');
+
+    expect(player.status()).toBe('playing');
+  });
 });
