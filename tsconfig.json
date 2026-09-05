@@ -8,8 +8,9 @@
     "noUncheckedIndexedAccess": true,
     "declaration": true,
     "skipLibCheck": true,
+    "types": [],
     "verbatimModuleSyntax": true,
     "outDir": "dist"
   },
-  "include": ["src", "test"]
+  "include": ["src"]
 }

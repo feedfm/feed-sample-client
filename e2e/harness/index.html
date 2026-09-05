@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>feed-sample-client harness</title></head>
+  <body>
+    <button id="connect">connect</button>
+    <button id="play">play</button>
+    <button id="pause">pause</button>
+    <button id="resume">resume</button>
+    <button id="skip">skip</button>
+    <button id="stop">stop</button>
+    <pre id="log"></pre>
+
+    <script type="module">
+      import { connect } from '../../dist/index.js';
+
+      const params = new URLSearchParams(location.search);
+      const token = params.get('token') ?? 'counting';
+      const secret = params.get('secret') ?? 'counting';
+      const stationName = params.get('station') ?? '';
+
+      window.events = [];
+      window.requests = [];
+      window.player = null;
+      window.station = null;
+
+      // Record every SDK call so a test can prove complete/start/elapse fired.
+      const realFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.includes('/api/v3/')) window.requests.push(url);
+        return realFetch(input, init);
+      };
+
+      const log = (line) => {
+        document.querySelector('#log').textContent += line + '\n';
+      };
+
+      document.querySelector('#connect').addEventListener('click', async () => {
+        try {
+          const player = await connect({ token, secret, baseUrl: 'https://stage.feed.fm' });
+          window.player = player;
+
+          for (const name of [
+            'play-started', 'play-elapsed', 'play-paused', 'play-stopped',
+            'buffering-started', 'buffering-ended', 'error',
+          ]) {
+            player.on(name, (arg) => {
+              window.events.push({ name, arg: arg ?? null });
+              log(name);
+            });
+          }
+          window.connected = true;
+        } catch (error) {
+          window.connectError = error.message;
+          log('connect failed: ' + error.message);
+        }
+      });
+
+      document.querySelector('#play').addEventListener('click', async () => {
+        const station = stationName === ''
+          ? await window.player.findStation('')
+          : await window.player.findStation(stationName);
+        window.station = station;
+        if (station !== null) window.player.play(station);
+      });
+
+      document.querySelector('#pause').addEventListener('click', () => window.player.pause());
+      document.querySelector('#resume').addEventListener('click', () => window.player.resume());
+      document.querySelector('#stop').addEventListener('click', () => window.player.stop());
+      document.querySelector('#skip').addEventListener('click', async () => {
+        window.skipResult = await window.player.skip();
+        log('skip -> ' + window.skipResult);
+      });
+    </script>
+  </body>
+</html>
