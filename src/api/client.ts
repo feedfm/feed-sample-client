@@ -1,7 +1,6 @@
 import { DEFAULT_BASE_URL } from '../config.js';
 import { ErrorCode, FeedError } from '../errors.js';
-import type { FeedErrorBody } from './schema.js';
-import type { Play, SearchPlay, SessionResponse, StationSearchQuery } from './schema.js';
+import type { FeedErrorBody, Play, SearchPlay, SessionResponse, StationSearchQuery } from './schema.js';
 
 export interface FeedApiClientOptions {
   token: string;
@@ -37,7 +36,10 @@ export class FeedApiClient {
   }
 
   async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-    const payload = this.clientId === undefined ? body : { ...body, client_id: this.clientId };
+    const payload =
+      this.clientId === undefined || 'client_id' in body
+        ? body
+        : { ...body, client_id: this.clientId };
 
     let response: Response;
     try {
@@ -77,15 +79,7 @@ export class FeedApiClient {
 
   async startSession(clientId?: string): Promise<SessionResponse> {
     const body = clientId === undefined ? {} : { client_id: clientId };
-    // Bypass the automatic client_id merge: on the very first session there is
-    // none, and this is the only route that will mint one for us.
-    const saved = this.clientId;
-    this.clientId = clientId;
-    try {
-      return await this.post<SessionResponse>('/session', body);
-    } finally {
-      this.clientId = saved;
-    }
+    return this.post<SessionResponse>('/session', body);
   }
 
   async searchStation(query: StationSearchQuery): Promise<SearchPlay> {

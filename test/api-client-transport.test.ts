@@ -57,6 +57,18 @@ describe('FeedApiClient transport', () => {
     expect(body).toEqual({ station_id: '7', client_id: 'abc123' });
   });
 
+  it('lets an explicit client_id in the body win over the instance field', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ success: true }),
+    );
+    const client = makeClient(fetchImpl as unknown as typeof fetch);
+    client.clientId = 'instance-id';
+    await client.post('/session', { client_id: 'explicit-id' });
+
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ client_id: 'explicit-id' });
+  });
+
   // The trap: codes 7, 9, 12 and 24 arrive with HTTP 200.
   it('throws FeedError on HTTP 200 with success:false', async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
