@@ -18,10 +18,13 @@ player.on('play-started', (song) => {
   console.log(`${song.title} — ${song.artist}`);
 });
 
-// Call play() from a click handler: browsers only allow audio to start
-// from a user gesture.
-document.querySelector('#play')!.addEventListener('click', async () => {
-  const station = await player.findStation('Station One');
+// Resolve the station ahead of time. Safari and iOS only allow audio to
+// start inside the synchronous call stack of a user gesture, so player.play()
+// must be called directly from the click handler — not after an awaited
+// findStation() inside it, which would run too late for the gesture to cover.
+const station = await player.findStation('Station One');
+
+document.querySelector('#play')!.addEventListener('click', () => {
   if (station !== null) player.play(station);
 });
 ```
@@ -72,9 +75,11 @@ an `error`.
 ## Errors
 
 `FeedError` carries a `code` (number), a `mnemonic` (the name for that code) and
-a `status` (the HTTP status from the request that failed). `code` is the
-stable value to branch on; `message` is free text that varies by call site and
-isn't meant for `switch` statements.
+a `status` (the HTTP status the failure maps to — not necessarily the status
+the HTTP response actually carried; some failures the API reports as HTTP 200
+with `success: false` are mapped to a representative status instead). `code`
+is the stable value to branch on; `message` is free text that varies by call
+site and isn't meant for `switch` statements.
 
 `ErrorCode` is exported so you can compare against named codes instead of
 magic numbers:
@@ -83,18 +88,21 @@ magic numbers:
 import { ErrorCode, FeedError } from 'feed-sample-client';
 
 player.on('error', (err) => {
-  if (err.code === ErrorCode.skipDenied) return; // playback continues
+  if (err.code === ErrorCode.throttled) return; // back off; the client is sending too many requests
   console.error(`${err.mnemonic} (${err.code}): ${err.message}`);
 });
 
 try {
   await connect({ token: 'demo', secret: 'demo' });
 } catch (err) {
-  if (err instanceof FeedError && err.code === ErrorCode.noMoreMusic) {
+  if (err instanceof FeedError && err.code === ErrorCode.noMusic) {
     // this client has no playable music
   }
 }
 ```
+
+A skip that the server denies (`skipDenied`, 7, or `playNotActive`, 12) never
+reaches `error` — `skip()` resolves `false` and playback continues instead.
 
 ## Notes
 
@@ -106,4 +114,7 @@ try {
 - `connect` takes a consumer token and secret, which ships the secret to the
   browser. For production, mint a short-lived pair with `POST /access_token`
   server-side and pass that instead — it uses the same scheme, so nothing else
-  changes.
+  changes. Note that `FeedApiClient` computes its `Authorization` header once,
+  in the constructor, and never rotates it, so a short-lived pair only remains
+  valid for sessions shorter than the token's own lifetime — reconnect (or
+  otherwise refresh the pair) before it expires.
