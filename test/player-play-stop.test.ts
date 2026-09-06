@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makePlay, makePlayer, makeSearchPlay, apiStation } from './player-harness.js';
 import type { SearchPlay } from '../src/api/schema.js';
+import { PLAY_RETRY_BACKOFF_MS } from '../src/config.js';
 import { ErrorCode, FeedError } from '../src/errors.js';
 
 beforeEach(() => { vi.useFakeTimers(); });
@@ -154,8 +155,70 @@ describe('startup failure', () => {
     client.createPlay.mockRejectedValue(new FeedError(ErrorCode.internalError, 'boom', 500));
 
     player.play({ uuid: 'u-7', name: 'Pop', options: {} });
-    await vi.advanceTimersByTimeAsync(0);
+    // A 5xx buys one retry with a backoff, so the failure is only final on
+    // the far side of it.
+    await vi.advanceTimersByTimeAsync(PLAY_RETRY_BACKOFF_MS);
+    expect(client.createPlay).toHaveBeenCalledTimes(2);
 
+    expect(eventNames()).toContain('error');
+    const stopped = events.find((e) => e.name === 'play-stopped');
+    expect(stopped?.arg).toEqual({ reason: 'error' });
+  });
+
+  it('retries a failed POST /play once on a 5xx and plays on success', async () => {
+    const { player, client, driver, eventNames } = makePlayer();
+    client.createPlay
+      .mockRejectedValueOnce(new FeedError(ErrorCode.internalError, 'boom', 500))
+      .mockResolvedValue(makePlay('p1'));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    await vi.advanceTimersByTimeAsync(PLAY_RETRY_BACKOFF_MS);
+    await beginPlayback(driver);
+
+    expect(client.createPlay).toHaveBeenNthCalledWith(1, '7');
+    expect(client.createPlay).toHaveBeenNthCalledWith(2, '7');
+    expect(eventNames()).not.toContain('error');
+    expect(eventNames()).toContain('play-started');
+  });
+
+  it('retries a failed POST /play once on a network error and plays on success', async () => {
+    const { player, client, driver, eventNames } = makePlayer();
+    client.createPlay
+      .mockRejectedValueOnce(new FeedError(ErrorCode.networkError, 'network down', 0))
+      .mockResolvedValue(makePlay('p1'));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    await vi.advanceTimersByTimeAsync(PLAY_RETRY_BACKOFF_MS);
+    await beginPlayback(driver);
+
+    expect(client.createPlay).toHaveBeenNthCalledWith(1, '7');
+    expect(client.createPlay).toHaveBeenNthCalledWith(2, '7');
+    expect(eventNames()).not.toContain('error');
+    expect(eventNames()).toContain('play-started');
+  });
+
+  it('never retries a 4xx failure of POST /play', async () => {
+    const { player, client, eventNames, events } = makePlayer();
+    client.createPlay.mockRejectedValue(new FeedError(ErrorCode.badCredentials, 'bad creds', 401));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    // Advance well past the retry backoff window to prove no retry is scheduled.
+    await vi.advanceTimersByTimeAsync(PLAY_RETRY_BACKOFF_MS);
+
+    expect(client.createPlay).toHaveBeenCalledTimes(1);
+    expect(eventNames()).toContain('error');
+    const stopped = events.find((e) => e.name === 'play-stopped');
+    expect(stopped?.arg).toEqual({ reason: 'error' });
+  });
+
+  it('never retries a throttled (22) response, to avoid digging the hole deeper', async () => {
+    const { player, client, eventNames, events } = makePlayer();
+    client.createPlay.mockRejectedValue(new FeedError(ErrorCode.throttled, 'throttled', 429));
+
+    player.play({ uuid: 'u-7', name: 'Pop', options: {} });
+    await vi.advanceTimersByTimeAsync(PLAY_RETRY_BACKOFF_MS);
+
+    expect(client.createPlay).toHaveBeenCalledTimes(1);
     expect(eventNames()).toContain('error');
     const stopped = events.find((e) => e.name === 'play-stopped');
     expect(stopped?.arg).toEqual({ reason: 'error' });
