@@ -5,6 +5,8 @@ import {
   ELAPSE_INTERVAL_MS,
   MAX_CONSECUTIVE_PLAY_FAILURES,
   MAX_EXPIRY_REFETCHES,
+  MAX_TOTAL_PLAY_FAILURES,
+  PLAY_RETRY_BACKOFF_MS,
   TICK_INTERVAL_MS,
   URL_EXPIRY_MARGIN_SECONDS,
 } from '../config.js';
@@ -36,6 +38,31 @@ const NOT_PLAYABLE = new Set<number>([
   ErrorCode.formatUnavailable,
 ]);
 
+/**
+ * Browsers reject `play()` with a `DOMException`, which subclasses `Error`;
+ * the name is matched rather than the class so a rejection that crossed a
+ * realm boundary is still recognised.
+ */
+function isDomError(error: unknown, name: string): boolean {
+  return error instanceof Error && error.name === name;
+}
+
+/**
+ * Spec section 6, recovery path 2. A 5xx or a dropped connection is worth
+ * exactly one retry; a 4xx is a decision, not a hiccup. Every failure also
+ * counts toward the code-22 throttle (10 errors in 5 minutes), so a
+ * `throttled` response is never retried - that only digs the hole deeper.
+ */
+function isRetriablePlayFailure(error: unknown): boolean {
+  if (!(error instanceof FeedError)) return false;
+  if (error.code === ErrorCode.throttled) return false;
+  return error.code === ErrorCode.networkError || error.status >= 500;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 export class PlayerImpl implements Player {
   readonly #client: FeedApiClient;
   readonly #driver: AudioDriver;
@@ -56,6 +83,13 @@ export class PlayerImpl implements Player {
   #playsStartedCount = 0;
   #consecutiveFailures = 0;
   #expiryRefetches = 0;
+
+  /**
+   * Never reset, unlike the two counters above, which both clear every time
+   * audio starts. It is the only bound on a station that can start a song and
+   * then break it, over and over.
+   */
+  #totalFailures = 0;
 
   /**
    * The id of the play `#handleLoadFailure` is currently recovering from, so
@@ -167,7 +201,7 @@ export class PlayerImpl implements Player {
     }
 
     const record = this.#stations.get(uuid);
-    if (record !== undefined && record.id !== '') return this.#client.createPlay(record.id);
+    if (record !== undefined && record.id !== '') return this.#createPlay(record.id);
 
     // No internal record: uuid is the stable way to name one station.
     const play = await this.#client.searchStation({ filter: { uuid } });
@@ -185,13 +219,64 @@ export class PlayerImpl implements Player {
 
     // A new attempt is starting, so any earlier recovery is done with.
     this.#recoveringPlayId = null;
-    this.#activePlay = { play, started: false, canSkip: false };
+    const active: ActivePlay = { play, started: false, canSkip: false };
+    this.#activePlay = active;
     this.#driver.loadCurrent(url, play.start_at ?? 0);
 
     try {
       await this.#driver.play();
     } catch (error) {
-      if (generation === this.#generation) await this.#handleLoadFailure(play, generation);
+      if (this.#wasInterrupted(error, generation, active)) return;
+      await this.#handleLoadFailure(play, generation);
+    }
+  }
+
+  /**
+   * Decides whether a rejected `driver.play()` is a load failure at all.
+   *
+   * `HTMLMediaElement.pause()` - and a new `load()` on the same element -
+   * rejects every pending `play()` promise with `AbortError`, and neither
+   * bumps `#generation`. Treating that as a bad file invalidates a perfectly
+   * good play, then starts audio the listener has just paused. So the same
+   * discipline `resume()` uses applies here: check the generation, the song,
+   * and the status before blaming the file.
+   *
+   * Returns true when the rejection has been dealt with and must not reach
+   * `#handleLoadFailure`.
+   */
+  #wasInterrupted(error: unknown, generation: number, active: ActivePlay): boolean {
+    if (generation !== this.#generation) return true;
+    // #advance() and skip() move to a new song without bumping #generation,
+    // so generation alone does not identify the song this attempt was for.
+    if (this.#activePlay !== active) return true;
+    if (this.#status !== 'playing') return true;
+    // Interrupted by pause(), or by loading a new source. A file that is
+    // genuinely broken also dispatches an `error` event, which is handled.
+    if (isDomError(error, 'AbortError')) return true;
+
+    if (isDomError(error, 'NotAllowedError')) {
+      // Autoplay policy, not a bad play. The play is left intact so a later
+      // user gesture can retry it, exactly as resume() does.
+      this.#status = 'paused';
+      this.#stopTimers();
+      this.#setBuffering(false);
+      this.#emitError(error);
+      const song = this.activeSong();
+      if (song !== null) this.#emitter.emit('play-paused', song);
+      return true;
+    }
+
+    return false;
+  }
+
+  /** POST /play, with the single retry the spec allows. */
+  async #createPlay(stationId: string): Promise<Play> {
+    try {
+      return await this.#client.createPlay(stationId);
+    } catch (error) {
+      if (!isRetriablePlayFailure(error)) throw error;
+      await delay(PLAY_RETRY_BACKOFF_MS);
+      return this.#client.createPlay(stationId);
     }
   }
 
@@ -224,25 +309,34 @@ export class PlayerImpl implements Player {
     void this.#client
       .startPlay(active.play.id)
       .then((rights) => { if (generation === this.#generation) active.canSkip = rights.canSkip; })
-      .catch((error: unknown) => { this.#emitError(error); });
+      .catch((error: unknown) => { this.#emitError(error); })
+      // Chained, not raced: POST /play keeps returning the play that is
+      // already playing until its start has committed (section 9), so issuing
+      // both in one tick can reserve the current song as the next one.
+      // Nothing waits on this - the audio is already running.
+      .then(() => this.#reserveNext(generation));
 
     this.#setBuffering(false);
     this.#startTimers();
 
     const song = this.activeSong();
     if (song !== null) this.#emitter.emit('play-started', song);
-
-    void this.#reserveNext(generation);
   }
 
   /** Retrieving audio is faster than playing it, so fetch the next song now. */
   async #reserveNext(generation: number): Promise<void> {
     const station = this.#activeStation;
     if (station === null || station.id === '') return;
+    if (this.#nextPlay !== null) return;
 
     try {
-      const play = await this.#client.createPlay(station.id);
+      const play = await this.#createPlay(station.id);
       if (generation !== this.#generation) return;
+      // A song can end while this reserve is in flight, and #advance() does
+      // not bump #generation - so both can fetch, and POST /play hands the
+      // same play to each. Playing it twice would repeat the song and report
+      // `complete` twice for one play id. An unused play is simply dropped.
+      if (this.#activePlay?.play.id === play.id || this.#nextPlay !== null) return;
 
       this.#nextPlay = play;
       if (play.audio_file.url !== undefined) {
@@ -319,6 +413,13 @@ export class PlayerImpl implements Player {
    * which has already closed the play out server-side.
    */
   async #advance(generation: number, options: { complete: boolean }): Promise<void> {
+    // A stray `ended` after teardown would otherwise reach #setBuffering(true)
+    // below and strand buffering() true while status() reads 'stopped'.
+    // #onAudioEnded passes the *current* generation, so the status is the
+    // load-bearing half of this guard: buffering is only ever true while
+    // playing, and nothing may start audio the listener has paused.
+    if (generation !== this.#generation || this.#status !== 'playing') return;
+
     const finished = this.#activePlay;
     this.#activePlay = null;
     this.#stopTimers();
@@ -336,11 +437,15 @@ export class PlayerImpl implements Player {
     // and nothing to report as buffering.
     if (next !== null && this.#driver.hasStandby()) {
       this.#driver.promoteStandby();
-      this.#activePlay = { play: next, started: false, canSkip: false };
+      // A new attempt is starting, so any earlier recovery is done with.
+      this.#recoveringPlayId = null;
+      const active: ActivePlay = { play: next, started: false, canSkip: false };
+      this.#activePlay = active;
       try {
         await this.#driver.play();
-      } catch {
-        if (generation === this.#generation) await this.#handleLoadFailure(next, generation);
+      } catch (error) {
+        if (this.#wasInterrupted(error, generation, active)) return;
+        await this.#handleLoadFailure(next, generation);
       }
       return;
     }
@@ -351,7 +456,7 @@ export class PlayerImpl implements Player {
     if (station === null) return;
 
     try {
-      const play = next ?? (await this.#client.createPlay(station.id));
+      const play = next ?? (await this.#createPlay(station.id));
       if (generation !== this.#generation) return;
       await this.#beginPlayback(play, generation);
     } catch (error) {
@@ -362,6 +467,17 @@ export class PlayerImpl implements Player {
   #onAudioError(): void {
     const active = this.#activePlay;
     if (active === null) return;
+
+    // Section 6's recovery is scoped to audio that fails *to load*. A play
+    // that has already reported its start is a real listen: report what was
+    // heard and move on. Invalidating here would throw away a play the server
+    // has recorded as started and lose up to ELAPSE_INTERVAL_MS of listening.
+    if (active.started) {
+      this.#reportElapse(active);
+      void this.#advance(this.#generation, { complete: false });
+      return;
+    }
+
     void this.#handleLoadFailure(active.play, this.#generation);
   }
 
@@ -381,6 +497,13 @@ export class PlayerImpl implements Player {
     // already being recovered is dropped rather than double-counted.
     if (this.#recoveringPlayId === play.id) return;
     this.#recoveringPlayId = play.id;
+
+    this.#totalFailures += 1;
+    if (this.#totalFailures >= MAX_TOTAL_PLAY_FAILURES) {
+      this.#emitError(new FeedError(ErrorCode.networkError, 'too many audio failures this session', 0));
+      this.#teardown('error');
+      return;
+    }
 
     const url = play.audio_file.url;
     const expiry = url === undefined
@@ -419,7 +542,7 @@ export class PlayerImpl implements Player {
     this.#setBuffering(true);
 
     try {
-      const play = await this.#client.createPlay(station.id);
+      const play = await this.#createPlay(station.id);
       if (generation !== this.#generation) return;
       await this.#beginPlayback(play, generation);
     } catch (error) {
@@ -484,7 +607,12 @@ export class PlayerImpl implements Player {
       if (generation !== this.#generation) return true;
 
       this.#status = 'playing';
-      await this.#advance(generation, { complete: false });
+      // Issued, not awaited. #advance() promotes the standby synchronously,
+      // but it then waits on driver.play(), whose promise settles only when
+      // audio actually begins — so awaiting it here would leave skip()
+      // pending for as long as the next song takes to load, or forever if it
+      // stalls. The caller is waiting on the skip decision, which is in.
+      void this.#advance(generation, { complete: false });
       return true;
     } catch (error) {
       this.#emitError(error);

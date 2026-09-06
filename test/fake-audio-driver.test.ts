@@ -2,14 +2,54 @@ import { describe, expect, it, vi } from 'vitest';
 import { FakeAudioDriver } from './fake-audio-driver.js';
 
 describe('FakeAudioDriver', () => {
-  it('records loads and playback calls', async () => {
+  // A real play() promise settles when playback begins, not when play() is
+  // called, so the fake keeps it pending until `playing` fires.
+  it('records loads and settles play() once playback begins', async () => {
     const driver = new FakeAudioDriver();
     driver.loadCurrent('https://cdn/a.mp3', 12);
-    await driver.play();
+    const started = driver.play();
+    expect(driver.hasPendingPlay()).toBe(true);
+
+    driver.fire('playing');
+    await expect(started).resolves.toBeUndefined();
 
     expect(driver.currentUrl).toBe('https://cdn/a.mp3');
     expect(driver.currentTime()).toBe(12);
     expect(driver.playCalls).toBe(1);
+  });
+
+  // The behaviour the real element couples and the fake used to hide:
+  // pause() rejects every play() promise still waiting on a load.
+  it('rejects a pending play() with AbortError when paused', async () => {
+    const driver = new FakeAudioDriver();
+    driver.loadCurrent('https://cdn/a.mp3');
+    const started = driver.play();
+
+    driver.pause();
+
+    await expect(started).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('rejects a pending play() when stopped or when a new source is loaded', async () => {
+    const stopped = new FakeAudioDriver();
+    const stoppedPlay = stopped.play();
+    stopped.stop();
+    await expect(stoppedPlay).rejects.toMatchObject({ name: 'AbortError' });
+
+    const reloaded = new FakeAudioDriver();
+    const reloadedPlay = reloaded.play();
+    reloaded.loadCurrent('https://cdn/b.mp3');
+    await expect(reloadedPlay).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('rejects a pending play() when the element errors', async () => {
+    const driver = new FakeAudioDriver();
+    driver.loadCurrent('https://cdn/broken.mp3');
+    const started = driver.play();
+
+    driver.fire('error');
+
+    await expect(started).rejects.toMatchObject({ name: 'NotSupportedError' });
   });
 
   it('reports no standby until it is marked ready', () => {

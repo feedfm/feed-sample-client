@@ -15,3 +15,13 @@ export const MAX_CONSECUTIVE_PLAY_FAILURES = 3;
 
 export const ELAPSE_INTERVAL_MS = 10_000;
 export const TICK_INTERVAL_MS = 1_000;
+
+/**
+ * An outer bound on load failures for the life of a Player. The consecutive
+ * counter resets every time audio starts, so a CDN handing back files that
+ * start and then break would otherwise cycle invalidate → play → start forever.
+ */
+export const MAX_TOTAL_PLAY_FAILURES = 10;
+
+/** Backoff before the single permitted retry of a failed POST /play. */
+export const PLAY_RETRY_BACKOFF_MS = 250;
