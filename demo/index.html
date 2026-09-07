@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>feed-sample-client demo</title>
+    <style>
+      :root {
+        --bg: #fbfbfa; --panel: #fff; --ink: #1c1b19; --muted: #6b6862;
+        --line: #e4e1db; --accent: #2f6f4f; --warn: #a8442a;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17181a; --panel: #1f2124; --ink: #eceae6; --muted: #9a968e;
+          --line: #32353a; --accent: #7fc4a0; --warn: #e08b6d;
+          color-scheme: dark;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--ink);
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 46rem; margin: 0 auto; display: grid; gap: 1.25rem; }
+      h1 { font-size: 1.15rem; margin: 0; font-weight: 620; letter-spacing: -0.01em; }
+      h1 span { color: var(--muted); font-weight: 400; }
+      section {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 10px; padding: 1rem 1.1rem;
+      }
+      h2 {
+        font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--muted); margin: 0 0 0.75rem; font-weight: 600;
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+      label { display: grid; gap: 0.25rem; font-size: 0.78rem; color: var(--muted); }
+      input, select {
+        font: inherit; padding: 0.4rem 0.55rem; border: 1px solid var(--line);
+        border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 9rem;
+      }
+      button {
+        font: inherit; font-weight: 550; padding: 0.45rem 0.9rem; cursor: pointer;
+        border: 1px solid var(--line); border-radius: 6px;
+        background: var(--panel); color: var(--ink);
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+      button:disabled { opacity: 0.38; cursor: not-allowed; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+      button.primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--bg); }
+      .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 1rem; margin: 0; }
+      dt { color: var(--muted); font-size: 0.8rem; }
+      dd { margin: 0; font-variant-numeric: tabular-nums; }
+      .pill {
+        display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px;
+        border: 1px solid var(--line); font-size: 0.78rem; font-variant-numeric: tabular-nums;
+      }
+      .pill.on { border-color: var(--accent); color: var(--accent); }
+      .pill.warn { border-color: var(--warn); color: var(--warn); }
+      progress { width: 100%; height: 5px; margin-top: 0.55rem; }
+      #log {
+        margin: 0; max-height: 15rem; overflow-y: auto; font-size: 0.78rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap; word-break: break-word; color: var(--muted);
+      }
+      #log b { color: var(--ink); font-weight: 550; }
+      #log .err { color: var(--warn); }
+      .hint { color: var(--muted); font-size: 0.8rem; margin: 0.6rem 0 0; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>feed-sample-client <span>— interactive demo</span></h1>
+
+      <section>
+        <h2>Session</h2>
+        <div class="row">
+          <label>Token <input id="token" value="demo" /></label>
+          <label>Secret <input id="secret" value="demo" /></label>
+          <label>Server
+            <select id="baseUrl">
+              <option value="https://stage.feed.fm">stage.feed.fm</option>
+              <option value="https://feed.fm">feed.fm</option>
+            </select>
+          </label>
+          <button id="connect" class="primary">Connect</button>
+        </div>
+        <p class="hint">
+          <code>demo</code>/<code>demo</code> has several radio stations.
+          <code>counting</code>/<code>counting</code> plays very short numbered
+          tracks — useful for watching a song complete and advance.
+        </p>
+      </section>
+
+      <section>
+        <h2>Station</h2>
+        <div class="row">
+          <label>Search by name <input id="station" placeholder="Station One" /></label>
+          <button id="play" class="primary" disabled>Find &amp; play</button>
+          <button id="unlock" disabled title="play() does this for you; here to try it alone">
+            Unlock audio only
+          </button>
+        </div>
+        <p class="hint" id="stationInfo"></p>
+      </section>
+
+      <section>
+        <h2>Now playing</h2>
+        <dl>
+          <dt>Status</dt><dd><span id="status" class="pill">stopped</span>
+            <span id="buffering" class="pill" hidden>buffering</span></dd>
+          <dt>Title</dt><dd id="title">—</dd>
+          <dt>Artist</dt><dd id="artist">—</dd>
+          <dt>Release</dt><dd id="release">—</dd>
+          <dt>Elapsed</dt><dd id="elapsed">—</dd>
+        </dl>
+        <progress id="progress" value="0" max="1"></progress>
+        <div class="controls" style="margin-top: 0.9rem">
+          <button id="pause" disabled>Pause</button>
+          <button id="resume" disabled>Resume</button>
+          <button id="skip" disabled>Skip</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <p class="hint">
+          A skip the server denies returns <code>false</code> and playback simply
+          continues — that is the licensing protocol, not a bug.
+        </p>
+      </section>
+
+      <section>
+        <h2>Events</h2>
+        <pre id="log">Not connected.</pre>
+      </section>
+    </main>
+
+    <script type="module">
+      import { connect, FeedError, ErrorCode } from '../dist/index.js';
+
+      const $ = (id) => document.getElementById(id);
+      const logEl = $('log');
+      let player = null;
+      let station = null;
+
+      function log(message, isError = false) {
+        if (logEl.textContent === 'Not connected.') logEl.textContent = '';
+        const at = new Date().toLocaleTimeString(undefined, { hour12: false });
+        const line = document.createElement('div');
+        if (isError) line.className = 'err';
+        line.innerHTML = `${at}  <b>${message}</b>`;
+        logEl.append(line);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function describe(error) {
+        return error instanceof FeedError
+          ? `${error.mnemonic} (${error.code}): ${error.message}`
+          : String(error?.message ?? error);
+      }
+
+      const mmss = (seconds) => {
+        const whole = Math.floor(seconds);
+        return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+      };
+
+      function render() {
+        const status = player?.status() ?? 'stopped';
+        const song = player?.activeSong() ?? null;
+        const buffering = player?.buffering() ?? false;
+
+        $('status').textContent = status;
+        $('status').className = `pill ${status === 'playing' ? 'on' : ''}`;
+        $('buffering').hidden = !buffering;
+
+        $('title').textContent = song?.title ?? '—';
+        $('artist').textContent = song?.artist ?? '—';
+        $('release').textContent = song?.release ?? '—';
+        $('elapsed').textContent = song
+          ? `${mmss(song.elapsedInSeconds)} / ${mmss(song.durationInSeconds)}`
+          : '—';
+        $('progress').max = song?.durationInSeconds || 1;
+        $('progress').value = song?.elapsedInSeconds ?? 0;
+
+        const live = player !== null;
+        $('play').disabled = !live;
+        $('unlock').disabled = !live;
+        $('pause').disabled = status !== 'playing';
+        $('resume').disabled = status !== 'paused';
+        $('skip').disabled = song === null;
+        $('stop').disabled = status === 'stopped';
+      }
+
+      $('connect').addEventListener('click', async () => {
+        $('connect').disabled = true;
+        try {
+          player = await connect({
+            token: $('token').value.trim(),
+            secret: $('secret').value.trim(),
+            baseUrl: $('baseUrl').value,
+          });
+
+          for (const name of [
+            'play-started', 'play-paused', 'play-stopped',
+            'buffering-started', 'buffering-ended',
+          ]) {
+            player.on(name, (arg) => {
+              log(name + (arg?.reason ? ` — ${arg.reason}` : ''));
+              render();
+            });
+          }
+          player.on('play-elapsed', render);
+          player.on('error', (error) => { log(describe(error), true); render(); });
+
+          log(`connected — client ${player.clientId()}`);
+        } catch (error) {
+          log(`connect failed — ${describe(error)}`, true);
+          if (error instanceof FeedError && error.code === ErrorCode.noMusic) {
+            log('this client has no music available on that server', true);
+          }
+        } finally {
+          $('connect').disabled = false;
+          render();
+        }
+      });
+
+      // unlockAudio() runs synchronously inside the gesture, so the awaited
+      // findStation() below cannot spend it. This is the pattern to copy.
+      $('play').addEventListener('click', async () => {
+        player.unlockAudio();
+
+        const query = $('station').value.trim();
+        $('stationInfo').textContent = `searching for "${query}"…`;
+        try {
+          station = await player.findStation(query);
+        } catch (error) {
+          $('stationInfo').textContent = '';
+          log(`findStation failed — ${describe(error)}`, true);
+          return;
+        }
+
+        if (station === null) {
+          $('stationInfo').textContent = `no playable station matched "${query}"`;
+          return;
+        }
+        $('stationInfo').textContent = `${station.name} — ${station.uuid}`;
+        player.play(station);
+        render();
+      });
+
+      $('unlock').addEventListener('click', () => {
+        player.unlockAudio();
+        log('unlockAudio()');
+      });
+
+      $('pause').addEventListener('click', () => { player.pause(); render(); });
+      $('resume').addEventListener('click', () => { player.resume(); render(); });
+      $('stop').addEventListener('click', () => { player.stop(); render(); });
+      $('skip').addEventListener('click', async () => {
+        const granted = await player.skip();
+        log(`skip() → ${granted}${granted ? '' : ' — server denied, still playing'}`);
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>

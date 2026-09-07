@@ -22,7 +22,8 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit && npm run typecheck:test && npm run typecheck:e2e",
     "typecheck:test": "tsc --noEmit -p test",
-    "typecheck:e2e": "tsc --noEmit -p e2e"
+    "typecheck:e2e": "tsc --noEmit -p e2e",
+    "demo": "npm run build && http-server . -p 5174 -c-1 -o /demo/index.html"
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
