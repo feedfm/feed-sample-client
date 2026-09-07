@@ -285,3 +285,37 @@ describe('stop', () => {
     expect(events.filter((e) => e.name === 'play-elapsed')).toHaveLength(before);
   });
 });
+
+describe('unlockAudio', () => {
+  // Browsers only permit audio a user gesture initiated, and the gesture is
+  // spent by the time an awaited findStation() resolves. Unlocking has to be
+  // reachable without a station so a caller can do it inside the gesture.
+  it('prepares the audio elements without a station', () => {
+    const { player, driver } = makePlayer();
+
+    player.unlockAudio();
+
+    expect(driver.unlockCalls).toBe(1);
+  });
+
+  it('is safe to call more than once', () => {
+    const { player, driver } = makePlayer();
+
+    player.unlockAudio();
+    player.unlockAudio();
+
+    expect(driver.unlockCalls).toBe(2);
+    expect(player.status()).toBe('stopped');
+  });
+
+  it('does not disturb player state', () => {
+    const { player, eventNames } = makePlayer();
+
+    player.unlockAudio();
+
+    expect(player.status()).toBe('stopped');
+    expect(player.buffering()).toBe(false);
+    expect(player.activeSong()).toBeNull();
+    expect(eventNames()).toEqual([]);
+  });
+});

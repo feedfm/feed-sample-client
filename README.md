@@ -18,13 +18,14 @@ player.on('play-started', (song) => {
   console.log(`${song.title} — ${song.artist}`);
 });
 
-// Resolve the station ahead of time. Safari and iOS only allow audio to
-// start inside the synchronous call stack of a user gesture, so player.play()
-// must be called directly from the click handler — not after an awaited
-// findStation() inside it, which would run too late for the gesture to cover.
-const station = await player.findStation('Station One');
+// Safari and iOS only allow audio to start inside the synchronous call stack
+// of a user gesture, and an awaited findStation() spends that gesture. Call
+// unlockAudio() synchronously from the click, then play whenever the station
+// resolves.
+document.querySelector('#play')!.addEventListener('click', async () => {
+  player.unlockAudio();
 
-document.querySelector('#play')!.addEventListener('click', () => {
+  const station = await player.findStation('Station One');
   if (station !== null) player.play(station);
 });
 ```
@@ -49,6 +50,7 @@ music available.
 | `status()` | `'stopped' \| 'playing' \| 'paused'` | `'playing'` from the moment `play()` is called |
 | `buffering()` | `boolean` | Playing, but waiting on the network |
 | `activeSong()` | `SongMetadata \| null` | Title, artist, release, duration, elapsed |
+| `unlockAudio()` | `void` | Prepare audio inside a user gesture, before a station is known. Optional; `play()` unlocks too |
 | `findStation(query)` | `Promise<Station \| null>` | Exact name match; `null` when nothing playable matches |
 | `play(station)` | `void` | Stops any other station first. Resumes if this station is paused |
 | `pause()` / `resume()` | `void` | |

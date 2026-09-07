@@ -57,6 +57,16 @@ interface Player {
   activeSong(): SongMetadata | null;
 
   /**
+   * Prepare the audio elements for playback without requiring a station.
+   * Browsers only permit audio that a user gesture initiated, and an awaited
+   * `findStation` spends that gesture, so a caller invokes this synchronously
+   * from a click or tap and then plays whenever the station resolves. Safe to
+   * call repeatedly; `play` unlocks as well.
+   */
+
+  unlockAudio(): void;
+
+  /**
    * Search for a station on the server and return a Station object
    * that can be passed to `play` to begin playback. If the search
    * query matches no station, then return null.

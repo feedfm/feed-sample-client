@@ -144,6 +144,10 @@ export class PlayerImpl implements Player {
     this.#emitter.off(event, handler);
   }
 
+  unlockAudio(): void {
+    this.#driver.unlock();
+  }
+
   async findStation(query: string): Promise<Station | null> {
     try {
       const play = await this.#client.searchStation({ filter: { name: query } });
