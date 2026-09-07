@@ -38,7 +38,7 @@ export function makePlayer(stations = [{ uuid: 'u-7', id: '7', name: 'Pop', opti
     // Defaults resolve to a usable play so a test that does not care about the
     // next-song preload does not fail inside it.
     createPlay: vi.fn(async () => makePlay('default')),
-    startPlay: vi.fn(async () => ({ canSkip: true, canLike: true })),
+    startPlay: vi.fn(async (_playId: string) => ({ canSkip: true, canLike: true })),
     elapsePlay: vi.fn(async () => undefined),
     skipPlay: vi.fn(async () => true),
     completePlay: vi.fn(async () => undefined),

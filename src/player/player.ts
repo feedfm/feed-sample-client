@@ -324,6 +324,16 @@ export class PlayerImpl implements Player {
   }
 
   /** Retrieving audio is faster than playing it, so fetch the next song now. */
+  /**
+   * Drops a reserve that landed while we were awaiting a play of our own and
+   * duplicates it. POST /play hands back the same play until one is started, so
+   * a reserve in flight when a song ends can return what #advance just fetched;
+   * keeping both would start and complete one play id twice.
+   */
+  #dropDuplicateReserve(playId: string): void {
+    if (this.#nextPlay !== null && this.#nextPlay.id === playId) this.#nextPlay = null;
+  }
+
   async #reserveNext(generation: number): Promise<void> {
     const station = this.#activeStation;
     if (station === null || station.id === '') return;
@@ -458,6 +468,11 @@ export class PlayerImpl implements Player {
     try {
       const play = next ?? (await this.#createPlay(station.id));
       if (generation !== this.#generation) return;
+      // A reserve that was still in flight when this advance began can land the
+      // same play in #nextPlay while we awaited - POST /play hands back the same
+      // play until one is started. Promoting it later would start and complete
+      // one play id twice. An unused play is simply dropped.
+      this.#dropDuplicateReserve(play.id);
       await this.#beginPlayback(play, generation);
     } catch (error) {
       this.#failStart(error, generation);

@@ -113,3 +113,43 @@ describe('running out of music', () => {
     expect(client.elapsePlay).not.toHaveBeenCalled();
   });
 });
+
+describe('a reserve racing an advance', () => {
+  // POST /play returns the same play until one is started or invalidated, so a
+  // reserve still in flight when a song ends can hand #advance's own fetch the
+  // identical play. If both slots keep it, the song is promoted a second time -
+  // starting and completing one play id twice, a double-reported listen.
+  it('never holds one play as both the active and the next song', async () => {
+    const harness = makePlayer();
+    const { client, driver } = harness;
+    const playB = makePlay('pB');
+
+    let resolveReserve!: (play: ReturnType<typeof makePlay>) => void;
+    let resolveAdvance!: (play: ReturnType<typeof makePlay>) => void;
+
+    client.createPlay
+      .mockResolvedValueOnce(makePlay('pA'))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveReserve = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveAdvance = resolve; }));
+
+    await playFirstSong(harness);        // pA playing; the reserve is still in flight
+    driver.fire('ended');                // no nextPlay, no standby -> advance fetches its own
+    await settle();
+
+    resolveReserve(playB);               // the reserve lands first, while activePlay is null
+    await settle();
+    resolveAdvance(playB);               // advance's fetch returns the very same play
+    await settle();
+
+    driver.fire('playing');              // pB starts
+    await settle();
+    driver.markStandbyReady();
+    driver.fire('ended');                // would promote the duplicate pB
+    await settle();
+    driver.fire('playing');
+    await settle();
+
+    const started = client.startPlay.mock.calls.map((call) => call[0]);
+    expect(started).toEqual([...new Set(started)]);
+  });
+});
