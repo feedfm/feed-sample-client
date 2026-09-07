@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toPublicStation, toStationRecord } from '../src/player/stations.js';
+import { ErrorCode, FeedError } from '../src/errors.js';
 import type { ApiStation } from '../src/api/schema.js';
 
 const apiStation: ApiStation = {
@@ -34,5 +35,36 @@ describe('station mapping', () => {
     const serialized = JSON.stringify(toPublicStation(toStationRecord(apiStation)));
     expect(serialized).not.toContain('33714093');
     expect(serialized).not.toContain('"id"');
+  });
+});
+
+describe('a station the server sent without a uuid', () => {
+  // Stage returns `uuid: null` on POST /station. The SDK addresses stations by
+  // uuid, so an absent one makes every station compare equal to every other -
+  // play() treats a new station as the one already playing and silently does
+  // nothing. Refuse the station instead of acting on it.
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty', ''],
+  ])('throws when uuid is %s', (_label, uuid) => {
+    const station = { ...apiStation, uuid } as unknown as ApiStation;
+
+    expect(() => toStationRecord(station)).toThrow(FeedError);
+  });
+
+  it('names the station and the code so the failure is diagnosable', () => {
+    const station = { ...apiStation, uuid: null } as unknown as ApiStation;
+
+    expect(() => toStationRecord(station)).toThrow(/Station One/);
+    try {
+      toStationRecord(station);
+    } catch (error) {
+      expect((error as FeedError).code).toBe(ErrorCode.malformedResponse);
+    }
+  });
+
+  it('still accepts a station that has one', () => {
+    expect(toStationRecord(apiStation).uuid).toBe('u-abc');
   });
 });

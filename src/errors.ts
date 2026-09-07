@@ -16,6 +16,8 @@ export const ErrorCode = {
   formatUnavailable: 24,
   /** Not from the API: transport or parse failure on our side. */
   networkError: -1,
+  /** Not from the API: the response parsed, but carried data we cannot act on. */
+  malformedResponse: -2,
 } as const;
 
 const MNEMONICS: Record<number, string> = Object.fromEntries(

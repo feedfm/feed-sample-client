@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FeedError } from '../src/errors.js';
+import { ErrorCode, FeedError } from '../src/errors.js';
 import { apiStation, makePlayer, makeSearchPlay } from './player-harness.js';
 
 describe('Player accessors', () => {
@@ -63,5 +63,21 @@ describe('findStation', () => {
 
     expect(player.status()).toBe('stopped');
     expect(eventNames()).toEqual([]);
+  });
+});
+
+describe('findStation when the server omits the uuid', () => {
+  // Not a "no such station" case - the station exists but cannot be addressed.
+  // Returning null would look identical to no match; a caller would retry
+  // forever. Rejecting says what is actually wrong.
+  it('rejects rather than resolving null', async () => {
+    const { player, client } = makePlayer();
+    const play = makeSearchPlay('p1', apiStation());
+    (play.station as { uuid: unknown }).uuid = null;
+    client.searchStation.mockResolvedValue(play);
+
+    await expect(player.findStation('Pop')).rejects.toMatchObject({
+      code: ErrorCode.malformedResponse,
+    });
   });
 });

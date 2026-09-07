@@ -2,7 +2,7 @@ import { FeedApiClient } from './api/client.js';
 import { HtmlAudioDriver } from './audio/html-audio.js';
 import { ErrorCode, FeedError } from './errors.js';
 import { PlayerImpl } from './player/player.js';
-import { toStationRecord } from './player/stations.js';
+import { hasUsableUuid, toStationRecord } from './player/stations.js';
 import { readStoredClientId, writeStoredClientId } from './storage.js';
 import type { ConnectOptions, Player } from './types.js';
 
@@ -35,6 +35,9 @@ export async function connect(options: ConnectOptions): Promise<Player> {
     client,
     driver: new HtmlAudioDriver(),
     clientId: session.client_id,
-    stations: (response.stations ?? []).map(toStationRecord),
+    // A seeded station only saves a lookup later, so skip any the SDK cannot
+    // address rather than failing the session over it. The loud failure belongs
+    // at findStation, where a caller actually asks for a station to play.
+    stations: (response.stations ?? []).filter(hasUsableUuid).map(toStationRecord),
   });
 }

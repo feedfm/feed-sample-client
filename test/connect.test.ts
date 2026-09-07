@@ -117,3 +117,28 @@ describe('connect', () => {
     expect(fetchImpl.mock.calls[0]![0]).toBe('https://stage.feed.fm/api/v3/session');
   });
 });
+
+describe('connect with an unusable station in the session', () => {
+  // The session's `stations` array is an optimization - it saves a lookup
+  // later. One malformed entry must not cost the whole session; the loud
+  // failure belongs at findStation, where a caller actually asks for it.
+  it('skips a seeded station with no uuid instead of failing the session', async () => {
+    installStorage();
+    installAudio();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      jsonResponse({
+        success: true,
+        session: { available: true, client_id: 'c1', time: 1 },
+        stations: [
+          { id: '7', uuid: null, name: 'Broken', on_demand: 0, pre_gain: null,
+            options: {}, crossfade_seconds: 0, single_play: 0, last_updated: 'x' },
+          { id: '8', uuid: 'u-8', name: 'Fine', on_demand: 0, pre_gain: null,
+            options: {}, crossfade_seconds: 0, single_play: 0, last_updated: 'x' },
+        ],
+      }));
+
+    const player = await connect({ token: 'tok', secret: 'sec', fetchImpl } as never);
+
+    expect(player.clientId()).toBe('c1');
+  });
+});

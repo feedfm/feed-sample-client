@@ -103,6 +103,14 @@ try {
 }
 ```
 
+Two codes are the SDK's own rather than the API's, and are negative to keep
+them distinct: `networkError` (-1) for a request that never returned a usable
+response, and `malformedResponse` (-2) for one that parsed but carried data the
+SDK cannot act on. The latter is what `findStation` rejects with when a station
+arrives without a `uuid` — stations are addressed by uuid alone, so accepting
+one without would make it indistinguishable from every other station, and
+`play()` would silently do nothing. Failing there is deliberate.
+
 A skip that the server denies (`skipDenied`, 7, or `playNotActive`, 12) never
 reaches `error` — `skip()` resolves `false` and playback continues instead.
 
