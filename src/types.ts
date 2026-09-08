@@ -44,16 +44,7 @@ export interface Player {
   status(): PlayerStatus;
   buffering(): boolean;
   activeSong(): SongMetadata | null;
-  /**
-   * Prepare the audio elements for playback. Call this synchronously from a
-   * user gesture - a click or tap - before any station is known. Browsers only
-   * permit audio that a gesture initiated, and an awaited `findStation` spends
-   * that gesture, so unlocking here is what lets you resolve a station
-   * asynchronously and play it afterwards.
-   *
-   * Safe to call more than once. `play` unlocks too, so callers that already
-   * resolve a station ahead of the gesture need not change.
-   */
+
   /**
    * The default stations for this session - the subset the server returns up
    * front so a client need not fetch the placement's full station list on
@@ -65,6 +56,16 @@ export interface Player {
    */
   defaultStations(): Station[];
 
+  /**
+   * Prepare the audio elements for playback. Call this synchronously from a
+   * user gesture - a click or tap - before any station is known. Browsers only
+   * permit audio that a gesture initiated, and an awaited `findStation` spends
+   * that gesture, so unlocking here is what lets you resolve a station
+   * asynchronously and play it afterwards.
+   *
+   * Safe to call more than once. `play` unlocks too, so callers that already
+   * resolve a station ahead of the gesture need not change.
+   */
   unlockAudio(): void;
 
   findStation(query: string): Promise<Station | null>;
