@@ -98,19 +98,27 @@
       </section>
 
       <section>
-        <h2>Stations</h2>
+        <h2>Default stations</h2>
         <div id="stationList" class="stations">Connect to see this session's stations.</div>
         <p class="hint">
-          These are the session's <code>defaultStations()</code> — the subset the
-          server returns up front, not every station the credentials can play.
+          <code>defaultStations()</code> — the subset the server returns up front,
+          not every station the credentials can play. Click one to play it.
         </p>
-        <div class="row" style="margin-top: 0.9rem">
+      </section>
+
+      <section>
+        <h2>Find a station</h2>
+        <div class="row">
           <label>Search by name <input id="station" placeholder="Station One" /></label>
           <button id="play" class="primary" disabled>Find &amp; play</button>
           <button id="unlock" disabled title="play() does this for you; here to try it alone">
             Unlock audio only
           </button>
         </div>
+        <p class="hint">
+          <code>findStation()</code> matches a station name exactly, and reaches
+          stations the list above does not include.
+        </p>
         <p class="hint" id="stationInfo"></p>
       </section>
 
