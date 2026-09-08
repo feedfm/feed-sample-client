@@ -50,6 +50,7 @@ music available.
 | `status()` | `'stopped' \| 'playing' \| 'paused'` | `'playing'` from the moment `play()` is called |
 | `buffering()` | `boolean` | Playing, but waiting on the network |
 | `activeSong()` | `SongMetadata \| null` | Title, artist, release, duration, elapsed |
+| `defaultStations()` | `Station[]` | The session's up-front subset, not the full catalog. Stable for the player's life |
 | `unlockAudio()` | `void` | Prepare audio inside a user gesture, before a station is known. Optional; `play()` unlocks too |
 | `findStation(query)` | `Promise<Station \| null>` | Exact name match; `null` when nothing playable matches |
 | `play(station)` | `void` | Stops any other station first. Resumes if this station is paused |

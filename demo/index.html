@@ -49,6 +49,9 @@
       button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
       button.primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--bg); }
       .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .stations { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .stations:empty::after { content: 'None returned for this session.'; color: var(--muted); }
+      .stations button.on { border-color: var(--accent); color: var(--accent); }
       dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 1rem; margin: 0; }
       dt { color: var(--muted); font-size: 0.8rem; }
       dd { margin: 0; font-variant-numeric: tabular-nums; }
@@ -95,8 +98,13 @@
       </section>
 
       <section>
-        <h2>Station</h2>
-        <div class="row">
+        <h2>Stations</h2>
+        <div id="stationList" class="stations">Connect to see this session's stations.</div>
+        <p class="hint">
+          These are the session's <code>defaultStations()</code> — the subset the
+          server returns up front, not every station the credentials can play.
+        </p>
+        <div class="row" style="margin-top: 0.9rem">
           <label>Search by name <input id="station" placeholder="Station One" /></label>
           <button id="play" class="primary" disabled>Find &amp; play</button>
           <button id="unlock" disabled title="play() does this for you; here to try it alone">
@@ -164,6 +172,27 @@
         return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
       };
 
+      function renderStations() {
+        const list = $('stationList');
+        list.textContent = '';
+        for (const candidate of player?.defaultStations() ?? []) {
+          const button = document.createElement('button');
+          button.textContent = candidate.name;
+          button.title = candidate.uuid;
+          // unlockAudio() and play() both run synchronously inside the gesture,
+          // so nothing here can spend it. No findStation round trip is needed:
+          // defaultStations() already handed us the Station.
+          button.addEventListener('click', () => {
+            player.unlockAudio();
+            station = candidate;
+            player.play(candidate);
+            log(`play("${candidate.name}")`);
+            render();
+          });
+          list.append(button);
+        }
+      }
+
       function render() {
         const status = player?.status() ?? 'stopped';
         const song = player?.activeSong() ?? null;
@@ -181,6 +210,10 @@
           : '—';
         $('progress').max = song?.durationInSeconds || 1;
         $('progress').value = song?.elapsedInSeconds ?? 0;
+
+        for (const button of $('stationList').querySelectorAll('button')) {
+          button.classList.toggle('on', station !== null && button.title === station.uuid);
+        }
 
         const live = player !== null;
         $('play').disabled = !live;
@@ -212,7 +245,9 @@
           player.on('play-elapsed', render);
           player.on('error', (error) => { log(describe(error), true); render(); });
 
-          log(`connected — client ${player.clientId()}`);
+          renderStations();
+          const count = player.defaultStations().length;
+          log(`connected — client ${player.clientId()}, ${count} default station(s)`);
         } catch (error) {
           log(`connect failed — ${describe(error)}`, true);
           if (error instanceof FeedError && error.code === ErrorCode.noMusic) {

@@ -81,3 +81,47 @@ describe('findStation when the server omits the uuid', () => {
     });
   });
 });
+
+describe('defaultStations', () => {
+  it('returns the session stations in the order the server sent them', () => {
+    const { player } = makePlayer([
+      { uuid: 'u-7', id: '7', name: 'Pop', options: { genre: 'pop' } },
+      { uuid: 'u-8', id: '8', name: 'Rock', options: {} },
+    ]);
+
+    expect(player.defaultStations()).toEqual([
+      { uuid: 'u-7', name: 'Pop', options: { genre: 'pop' } },
+      { uuid: 'u-8', name: 'Rock', options: {} },
+    ]);
+  });
+
+  it('is empty when the session returned none', () => {
+    expect(makePlayer([]).player.defaultStations()).toEqual([]);
+  });
+
+  it('never exposes the numeric station id', () => {
+    const { player } = makePlayer([{ uuid: 'u-7', id: '33714093', name: 'Pop', options: {} }]);
+
+    expect(JSON.stringify(player.defaultStations())).not.toContain('33714093');
+  });
+
+  // The list describes the session, not everything the player has since seen.
+  // A picker rendered from it must not sprout entries as the user searches.
+  it('does not grow when findStation resolves another station', async () => {
+    const { player, client } = makePlayer();
+    client.searchStation.mockResolvedValue(makeSearchPlay('p1', apiStation({ uuid: 'u-9', name: 'Chill' })));
+
+    await player.findStation('Chill');
+
+    expect(player.defaultStations().map((s) => s.name)).toEqual(['Pop']);
+  });
+
+  // Callers must not be able to reach into the player's own state.
+  it('cannot be mutated by the caller', () => {
+    const { player } = makePlayer();
+
+    player.defaultStations().push({ uuid: 'x', name: 'Injected', options: {} });
+
+    expect(player.defaultStations().map((s) => s.name)).toEqual(['Pop']);
+  });
+});

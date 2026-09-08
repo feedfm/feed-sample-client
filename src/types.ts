@@ -54,6 +54,17 @@ export interface Player {
    * Safe to call more than once. `play` unlocks too, so callers that already
    * resolve a station ahead of the gesture need not change.
    */
+  /**
+   * The default stations for this session - the subset the server returns up
+   * front so a client need not fetch the placement's full station list on
+   * startup.
+   *
+   * This is NOT every station the credentials can play. The complete list comes
+   * from `GET /station`, which this SDK does not implement. Stable for the life
+   * of the player, and empty when the session returned none.
+   */
+  defaultStations(): Station[];
+
   unlockAudio(): void;
 
   findStation(query: string): Promise<Station | null>;

@@ -71,6 +71,7 @@ export class PlayerImpl implements Player {
 
   readonly #emitter = new Emitter<PlayerEvents>();
   readonly #stations = new Map<string, StationRecord>();
+  readonly #defaultStations: readonly StationRecord[];
   readonly #reservations = new ReservationStore();
 
   #status: PlayerStatus = 'stopped';
@@ -110,6 +111,9 @@ export class PlayerImpl implements Player {
     this.#now = deps.now ?? (() => Date.now());
 
     for (const record of deps.stations ?? []) this.#stations.set(record.uuid, record);
+    // Held separately from #stations, which findStation also writes to: this
+    // list describes the session and must not grow as the caller searches.
+    this.#defaultStations = [...(deps.stations ?? [])];
   }
 
   clientId(): string {
@@ -142,6 +146,11 @@ export class PlayerImpl implements Player {
 
   off<K extends keyof PlayerEvents>(event: K, handler: PlayerEvents[K]): void {
     this.#emitter.off(event, handler);
+  }
+
+  defaultStations(): Station[] {
+    // A fresh array of fresh objects: a caller cannot reach into player state.
+    return this.#defaultStations.map(toPublicStation);
   }
 
   unlockAudio(): void {

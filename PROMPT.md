@@ -57,6 +57,15 @@ interface Player {
   activeSong(): SongMetadata | null;
 
   /**
+   * Return the default stations for this session - the subset the server
+   * returns up front so a client need not fetch the placement's full station
+   * list on startup. This is not every station the credentials can play.
+   * Stable for the life of the player, and empty when none were returned.
+   */
+
+  defaultStations(): Station[];
+
+  /**
    * Prepare the audio elements for playback without requiring a station.
    * Browsers only permit audio that a user gesture initiated, and an awaited
    * `findStation` spends that gesture, so a caller invokes this synchronously
