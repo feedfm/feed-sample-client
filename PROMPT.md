@@ -3,7 +3,7 @@
 Let's make a plan to create a new typescript SDK package  that can be used to
 retrieve and play music from feed.fm in a browser.
 
-The feed.fm API is documented in @/Users/ericlambrecht/git/feed-api/openapi/spec.v3.yml
+The feed.fm API is documented in https://feed.fm/api/v3/openapi.yaml
 
 Let's call this SDK 'feed-sample-client`. This package will let the client
 initiate a session with the Feed.fm API using client provided credentials, and

@@ -1,6 +1,18 @@
 # feed-sample-client
 
-A browser SDK for playing music from Feed.fm. Start a session, find a station
+## Purpose
+
+This repository contains an example browser SDK that uses the Feed.fm API
+to play music. This code was created by Anthropic Claude by passing it the the included
+`PROMPT.md` file, and is meant to guide Feed.fm customers looking to make their
+own SDK for their own platforms.
+
+This a very minimal implementation. There is an additional `crossfade` branch that
+extends on this implementation to support crossfading between songs.
+
+## Overview
+
+This is a browser SDK for playing music from Feed.fm. Start a session, find a station
 by name, play it.
 
 ```bash
