@@ -4,11 +4,14 @@
 
 This repository contains an example browser SDK that uses the Feed.fm API
 to play music. This code was created by Anthropic Claude by passing it the the included
-`PROMPT.md` file, and is meant to guide Feed.fm customers looking to make their
+`PROMPT.md` file. Claude produced the `SPEC.md` file, which was then implemented
+in typescript. This example meant to guide Feed.fm customers looking to make their
 own SDK for their own platforms.
 
-This a very minimal implementation. There is an additional `crossfade` branch that
-extends on this implementation to support crossfading between songs.
+This a very minimal implementation. There is an additional `crossfade` branch
+that extends on this implementation to support crossfading between songs. Also,
+clients may extend this to make use of `like` and `skip` functionality, which
+isn't included in this demo.
 
 ## Overview
 
